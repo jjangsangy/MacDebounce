@@ -26,7 +26,19 @@ debounce_ms = 50
 # Default: "all"
 buttons = "all"
 
-# Verbose logging to stdout/stderr.
-# Useful for observing chattering clicks in the terminal during testing.
-# Default: false
-verbose = false
+# Logging options:
+#
+# Log level:
+#   "info"    - Log service start, stop, and status
+#   "debug"   - Also log every debounced / suppressed bounce click
+#   "trace"   - Log EVERY mouse event (passed and debounced) with timestamps (useful for deep debugging)
+log_level = "debug"
+
+# Output logs to macOS Unified Logging System (syslog).
+# When true, logs appear in Console.app and can be inspected via:
+#   log stream --predicate 'process == "macdebounce"' --info --debug
+# Default: true
+syslog = true
+
+# Optional path to a file to append logs to
+# log_file = "/Users/username/Library/Logs/macdebounce.custom.log"

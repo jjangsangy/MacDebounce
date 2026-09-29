@@ -1,6 +1,7 @@
 mod config;
 mod debounce;
 mod event_tap;
+mod logger;
 mod plist;
 
 use std::env;
@@ -65,6 +66,12 @@ fn main() {
         CliAction::Status => {
             print_status();
         }
+        CliAction::ShowLogs => {
+            logger::show_recent_logs();
+        }
+        CliAction::StreamLogs => {
+            logger::stream_logs();
+        }
         CliAction::GeneratePlist(config) => {
             let current_exe = env::current_exe().unwrap_or_else(|_| "macdebounce".into());
             let canonical = std::fs::canonicalize(&current_exe).unwrap_or(current_exe);
@@ -92,14 +99,19 @@ fn main() {
             println!("Starting MacDebounce v{VERSION}...");
             println!("  Debounce delay:   {} ms", config.debounce_ms);
             println!("  Target buttons:   {}", config.format_buttons_summary());
+            println!("  Log level:        {:?}", config.log_level);
             println!(
-                "  Verbose mode:     {}",
-                if config.verbose {
-                    "enabled"
+                "  macOS syslog:     {}",
+                if config.use_syslog {
+                    "enabled (view in Console.app / log stream)"
                 } else {
                     "disabled"
                 }
             );
+
+            if let Some(ref path) = config.log_file {
+                println!("  Custom log file:  {}", path.display());
+            }
 
             if let Some(ref path) = config.config_file_path {
                 println!("  Loaded config:    {}", path.display());

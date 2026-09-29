@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use clap::Parser;
 
 use crate::debounce::{ButtonSelection, MAX_BUTTONS};
+use crate::logger::LogLevel;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -27,9 +28,29 @@ pub struct Cli {
     #[arg(short = 'c', long = "config", value_name = "FILE")]
     pub config: Option<PathBuf>,
 
-    /// Log each debounced click to stdout (useful for testing)
+    /// Log debounced clicks to stdout and macOS Unified Logging
     #[arg(short = 'v', long = "verbose")]
     pub verbose: bool,
+
+    /// Log EVERY mouse event (passed and debounced) with timestamps for in-depth debugging
+    #[arg(long = "log-all")]
+    pub log_all: bool,
+
+    /// Custom log file path to write log entries to
+    #[arg(long = "log-file", value_name = "PATH")]
+    pub log_file: Option<PathBuf>,
+
+    /// Disable logging to macOS Unified Logging System (syslog)
+    #[arg(long = "no-syslog")]
+    pub no_syslog: bool,
+
+    /// Display recent log entries from the background daemon
+    #[arg(long = "show-logs")]
+    pub show_logs: bool,
+
+    /// Stream live daemon logs in real time via macOS Unified Logging
+    #[arg(long = "stream-logs")]
+    pub stream_logs: bool,
 
     /// Display current accessibility status and launchd service state
     #[arg(long = "status")]
@@ -52,7 +73,9 @@ pub struct Cli {
 pub struct Config {
     pub debounce_ms: u64,
     pub selection: ButtonSelection,
-    pub verbose: bool,
+    pub log_level: LogLevel,
+    pub use_syslog: bool,
+    pub log_file: Option<PathBuf>,
     pub config_file_path: Option<PathBuf>,
 }
 
@@ -61,7 +84,9 @@ impl Default for Config {
         Self {
             debounce_ms: 50,
             selection: ButtonSelection::All,
-            verbose: false,
+            log_level: LogLevel::Info,
+            use_syslog: true,
+            log_file: None,
             config_file_path: None,
         }
     }
@@ -74,6 +99,8 @@ pub enum CliAction {
     UninstallLaunchd,
     GeneratePlist(Config),
     Status,
+    ShowLogs,
+    StreamLogs,
 }
 
 impl Config {
@@ -222,7 +249,30 @@ impl Config {
                         }
                     }
                     "verbose" => {
-                        cfg.verbose = val.parse::<bool>().unwrap_or(false);
+                        if val.parse::<bool>().unwrap_or(false) {
+                            cfg.log_level = LogLevel::Debug;
+                        }
+                    }
+                    "log_level" => {
+                        let clean = val
+                            .trim_matches('"')
+                            .trim_matches('\'')
+                            .to_ascii_lowercase();
+                        cfg.log_level = match clean.as_str() {
+                            "trace" | "all" => LogLevel::Trace,
+                            "debug" | "verbose" => LogLevel::Debug,
+                            "error" => LogLevel::Error,
+                            _ => LogLevel::Info,
+                        };
+                    }
+                    "syslog" => {
+                        cfg.use_syslog = val.parse::<bool>().unwrap_or(true);
+                    }
+                    "log_file" => {
+                        let clean = val.trim_matches('"').trim_matches('\'');
+                        if !clean.is_empty() {
+                            cfg.log_file = Some(PathBuf::from(clean));
+                        }
                     }
                     _ => {}
                 }
@@ -234,6 +284,14 @@ impl Config {
 
     /// Convert parsed CLI arguments into the appropriate CliAction
     pub fn process_cli(cli: Cli) -> Result<CliAction, String> {
+        if cli.show_logs {
+            return Ok(CliAction::ShowLogs);
+        }
+
+        if cli.stream_logs {
+            return Ok(CliAction::StreamLogs);
+        }
+
         if cli.uninstall_launchd {
             return Ok(CliAction::UninstallLaunchd);
         }
@@ -255,8 +313,16 @@ impl Config {
         if let Some(ref btns) = cli.buttons {
             config.selection = Self::parse_buttons(btns)?;
         }
-        if cli.verbose {
-            config.verbose = true;
+        if cli.log_all {
+            config.log_level = LogLevel::Trace;
+        } else if cli.verbose {
+            config.log_level = LogLevel::Debug;
+        }
+        if cli.no_syslog {
+            config.use_syslog = false;
+        }
+        if let Some(path) = cli.log_file {
+            config.log_file = Some(path);
         }
 
         if cli.generate_plist {
@@ -360,15 +426,19 @@ mod tests {
             cfg.selection,
             ButtonSelection::Specific((1 << 0) | (1 << 1))
         );
-        assert_eq!(cfg.verbose, true);
+        assert_eq!(cfg.log_level, LogLevel::Debug);
 
         let toml_all = r#"
             debounce_ms = 60
             buttons = "all"
+            log_level = "trace"
+            syslog = false
         "#;
         let cfg_all = Config::parse_toml_str(toml_all).unwrap();
         assert_eq!(cfg_all.debounce_ms, 60);
         assert_eq!(cfg_all.selection, ButtonSelection::All);
+        assert_eq!(cfg_all.log_level, LogLevel::Trace);
+        assert_eq!(cfg_all.use_syslog, false);
     }
 
     #[test]
@@ -383,7 +453,7 @@ mod tests {
             CliAction::Run(cfg) => {
                 assert_eq!(cfg.debounce_ms, 40);
                 assert_eq!(cfg.selection, ButtonSelection::Specific(1 << 0));
-                assert!(cfg.verbose);
+                assert_eq!(cfg.log_level, LogLevel::Debug);
             }
             _ => panic!("Expected CliAction::Run"),
         }

@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 use crate::config::Config;
 use crate::debounce::{DebounceAction, Debouncer, DropReason, button_name};
+use crate::logger::{init as init_logger, log_debug, log_error, log_info, log_trace};
 
 // macOS CoreGraphics / CoreFoundation FFI types
 pub type CGEventTapProxy = *mut c_void;
@@ -103,7 +104,7 @@ static TERMINATING: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn handle_termination_signal(_sig: i32) {
     if !TERMINATING.swap(true, Ordering::SeqCst) {
-        eprintln!("\nReceived termination signal. Shutting down cleanly...");
+        log_info("Received termination signal. Shutting down cleanly...");
         let rl = ACTIVE_RUN_LOOP.load(Ordering::SeqCst);
         if !rl.is_null() {
             unsafe {
@@ -115,7 +116,6 @@ extern "C" fn handle_termination_signal(_sig: i32) {
 
 pub struct EventTapContext {
     pub debouncer: Debouncer,
-    pub verbose: bool,
     pub tap_port: CFMachPortRef,
 }
 
@@ -131,6 +131,7 @@ unsafe extern "C" fn event_tap_callback(
     if event_type == CG_EVENT_TAP_DISABLED_BY_TIMEOUT
         || event_type == CG_EVENT_TAP_DISABLED_BY_USER_INPUT
     {
+        log_debug("Event tap was temporarily disabled by macOS, re-enabling...");
         if !ctx.tap_port.is_null() {
             unsafe {
                 CGEventTapEnable(ctx.tap_port, true);
@@ -167,23 +168,36 @@ unsafe extern "C" fn event_tap_callback(
         ctx.debouncer.process_up(button_idx, timestamp_ns)
     };
 
+    let name = button_name(button_idx);
+    let state_str = if is_down { "DOWN" } else { "UP  " };
+
     match action {
-        DebounceAction::Pass => event,
+        DebounceAction::Pass => {
+            log_trace(&format!(
+                "Mouse {state_str}: {name} (btn {button_idx}) at {timestamp_ns}ns -> Accepted"
+            ));
+            event
+        }
         DebounceAction::Drop { reason } => {
-            if ctx.verbose {
-                let name = button_name(button_idx);
-                let reason_desc = match reason {
-                    DropReason::DownTooQuickAfterDown(ms) => {
-                        format!("spurious press {ms}ms after previous press")
-                    }
-                    DropReason::DownTooQuickAfterUp(ms) => {
-                        format!("spurious release bounce {ms}ms after release")
-                    }
-                    DropReason::DuplicateDownWhileHeld => "duplicate press while held".to_string(),
-                    DropReason::PairedBounceUp => "paired bounce release".to_string(),
-                };
-                eprintln!("[DEBOUNCED] {name} button: {reason_desc}");
-            }
+            let reason_desc = match reason {
+                DropReason::DownTooQuickAfterDown(ms) => {
+                    format!("spurious press {ms}ms after previous press")
+                }
+                DropReason::DownTooQuickAfterUp(ms) => {
+                    format!("spurious release bounce {ms}ms after release")
+                }
+                DropReason::DuplicateDownWhileHeld => "duplicate press while held".to_string(),
+                DropReason::PairedBounceUp => "paired bounce release".to_string(),
+            };
+
+            log_debug(&format!(
+                "[DEBOUNCED] {name} button (btn {button_idx}): {reason_desc}"
+            ));
+
+            log_trace(&format!(
+                "Mouse {state_str}: {name} (btn {button_idx}) at {timestamp_ns}ns -> Dropped ({reason_desc})"
+            ));
+
             // Return null to drop the event from reaching other apps
             ptr::null_mut()
         }
@@ -216,8 +230,25 @@ pub fn check_accessibility(prompt_if_missing: bool) -> bool {
 }
 
 pub fn run_event_tap(config: Config) -> Result<(), String> {
+    // 0. Initialize logger
+    init_logger(
+        config.log_level,
+        config.use_syslog,
+        config.log_file.as_deref(),
+    );
+
+    log_info(&format!(
+        "MacDebounce v{} starting (debounce_ms: {}, buttons: {}, log_level: {:?}, syslog: {})",
+        env!("CARGO_PKG_VERSION"),
+        config.debounce_ms,
+        config.format_buttons_summary(),
+        config.log_level,
+        config.use_syslog,
+    ));
+
     // 1. Check Accessibility permissions
     if !check_accessibility(true) {
+        log_error("Accessibility permission is not granted.");
         return Err("Accessibility permission is not granted.\n\
              Please grant Accessibility permission for this binary in:\n\
              System Settings -> Privacy & Security -> Accessibility\n\
@@ -230,7 +261,6 @@ pub fn run_event_tap(config: Config) -> Result<(), String> {
 
     let context = Box::new(EventTapContext {
         debouncer: Debouncer::new(config.debounce_ms, selection),
-        verbose: config.verbose,
         tap_port: ptr::null_mut(),
     });
 
@@ -252,6 +282,7 @@ pub fn run_event_tap(config: Config) -> Result<(), String> {
         unsafe {
             drop(Box::from_raw(context_ptr));
         }
+        log_error("Failed to create event tap.");
         return Err(
             "Failed to create event tap. Make sure Accessibility permission is granted \
              in System Settings -> Privacy & Security -> Accessibility."
@@ -270,6 +301,7 @@ pub fn run_event_tap(config: Config) -> Result<(), String> {
             CFRelease(tap);
             drop(Box::from_raw(context_ptr));
         }
+        log_error("Failed to create CFRunLoopSource for event tap.");
         return Err("Failed to create CFRunLoopSource for event tap.".to_string());
     }
 
@@ -287,7 +319,7 @@ pub fn run_event_tap(config: Config) -> Result<(), String> {
         CGEventTapEnable(tap, true);
     }
 
-    println!("MacDebounce is active (0.0% idle CPU). Listening for mouse events...");
+    log_info("MacDebounce is active (0.0% idle CPU). Listening for mouse events...");
 
     // 4. Run loop blocks until CFRunLoopStop is called
     unsafe {
@@ -303,6 +335,6 @@ pub fn run_event_tap(config: Config) -> Result<(), String> {
         drop(Box::from_raw(context_ptr));
     }
 
-    println!("MacDebounce exited cleanly.");
+    log_info("MacDebounce exited cleanly.");
     Ok(())
 }

@@ -66,6 +66,57 @@ Whenever a chattering bounce click is detected, it logs to terminal:
 
 ---
 
+## Logging & Debugging
+
+`macdebounce` provides comprehensive macOS logging so you can easily diagnose if mouse buttons are misbehaving, chattering, or failing to register.
+
+### 1. View Logs in Real Time (macOS Unified Logging System)
+
+Logs are automatically published to macOS's native Unified Logging System (`os_log` / `syslog`):
+
+```bash
+# Stream daemon logs in real time from the command line:
+macdebounce --stream-logs
+
+# Or using macOS's built-in log command directly:
+log stream --predicate 'process == "macdebounce"' --info --debug
+```
+
+You can also open Apple's **Console.app**, filter by Process `macdebounce`, and view live system log events.
+
+### 2. Inspect Daemon Log Files
+
+To inspect recent background daemon log entries without digging through directories:
+
+```bash
+macdebounce --show-logs
+```
+
+This reads the tail of:
+- `~/Library/Logs/macdebounce.log` (standard daemon output)
+- `~/Library/Logs/macdebounce.err` (debounce event logs and errors)
+
+### 3. Diagnose Broken or Unknown Mouse Buttons (`--log-all`)
+
+If a mouse button (e.g. side Back/Forward) isn't behaving properly, run `macdebounce` interactively with `--log-all`:
+
+```bash
+macdebounce --log-all
+```
+
+Every single mouse event is printed with its hardware button index and nanosecond timestamp:
+
+```text
+20:40:12.102 [TRACE] Mouse DOWN: Left (btn 0) at 1450284200ns -> Accepted
+20:40:12.180 [TRACE] Mouse UP:   Left (btn 0) at 1450362200ns -> Accepted
+20:40:12.195 [DEBUG] [DEBOUNCED] Left button (btn 0): spurious release bounce 15ms after release
+20:40:12.195 [TRACE] Mouse DOWN: Left (btn 0) at 1450377200ns -> Dropped (spurious release bounce 15ms after release)
+20:40:13.400 [TRACE] Mouse DOWN: Back (btn 3) at 1451582200ns -> Accepted
+20:40:14.200 [TRACE] Mouse DOWN: Forward (btn 4) at 1452382200ns -> Accepted
+```
+
+---
+
 ## Configuration
 
 You can configure `macdebounce` via CLI arguments or a TOML configuration file.
@@ -76,7 +127,12 @@ You can configure `macdebounce` via CLI arguments or a TOML configuration file.
 |------|-------|-------------|---------|
 | `--debounce-ms <MS>` | `-d` | Debounce lockout window in ms | `50` |
 | `--buttons <LIST>` | `-b` | Buttons to debounce (`all`, `left`, `right`, `middle`, `back`, `forward`, `side`, `0,1`) | `all` |
-| `--verbose` | `-v` | Log debounced clicks to stdout | `false` |
+| `--verbose` | `-v` | Log debounced clicks to stdout & macOS Unified Log | `false` |
+| `--log-all` | | Log EVERY mouse event (passed & dropped) for deep debugging | `false` |
+| `--show-logs` | | Display recent log file entries from the background service | — |
+| `--stream-logs` | | Stream live daemon logs from macOS Unified Logging | — |
+| `--log-file <PATH>` | | Custom log file path to write log entries to | — |
+| `--no-syslog` | | Disable macOS Unified Logging (`syslog`) | `false` |
 | `--config <FILE>` | `-c` | Path to custom TOML config file | — |
 | `--status` | | Display accessibility and service status | — |
 | `--install-launchd` | | Install & load LaunchAgent for current user | — |

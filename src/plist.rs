@@ -76,8 +76,18 @@ pub fn generate_plist_string(binary_path: &Path, config: &Config) -> Result<Stri
         }
     }
 
-    if config.verbose {
-        args_xml.push_str("        <string>--verbose</string>\n");
+    match config.log_level {
+        crate::logger::LogLevel::Trace => {
+            args_xml.push_str("        <string>--log-all</string>\n");
+        }
+        crate::logger::LogLevel::Debug => {
+            args_xml.push_str("        <string>--verbose</string>\n");
+        }
+        _ => {}
+    }
+
+    if !config.use_syslog {
+        args_xml.push_str("        <string>--no-syslog</string>\n");
     }
 
     Ok(format!(
