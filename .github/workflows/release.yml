@@ -36,9 +36,9 @@ jobs:
           lipo -create -output dist/universal/macdebounce \
             dist/arm64/macdebounce \
             dist/x86_64/macdebounce
-          codesign --force -s - -r='designated => identifier "com.macdebounce.daemon"' dist/universal/macdebounce
-          codesign --force -s - -r='designated => identifier "com.macdebounce.daemon"' dist/arm64/macdebounce
-          codesign --force -s - -r='designated => identifier "com.macdebounce.daemon"' dist/x86_64/macdebounce
+          codesign --force -s - -i com.macdebounce.daemon -r='designated => identifier "com.macdebounce.daemon"' dist/universal/macdebounce
+          codesign --force -s - -i com.macdebounce.daemon -r='designated => identifier "com.macdebounce.daemon"' dist/arm64/macdebounce
+          codesign --force -s - -i com.macdebounce.daemon -r='designated => identifier "com.macdebounce.daemon"' dist/x86_64/macdebounce
 
       - name: Package archives & checksums
         run: |

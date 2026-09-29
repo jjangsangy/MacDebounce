@@ -1,4 +1,5 @@
 use std::ffi::c_void;
+use std::io::IsTerminal;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
@@ -254,32 +255,65 @@ pub fn run_event_tap(config: Config) -> Result<(), String> {
     ));
 
     // 1. Check Accessibility permissions.
-    // If not granted, trigger the system prompt once, then wait for the user to grant permission
-    // in System Settings without rapidly exiting or spamming system dialogs.
-    if !check_accessibility(false) {
-        log_warn("Accessibility permission is not granted yet.");
-        log_warn(
-            "Requesting Accessibility permission (System Settings -> Privacy & Security -> Accessibility)...",
-        );
-        // Trigger the system prompt dialog once
-        check_accessibility(true);
+    let is_interactive = std::io::stdout().is_terminal();
 
-        log_warn("Waiting for Accessibility permission to be granted in System Settings...");
-        log_warn(
-            "MacDebounce will automatically resume once permission is enabled (no restart required).",
-        );
-
-        while !check_accessibility(false) {
-            if TERMINATING.load(Ordering::SeqCst) {
-                log_info(
-                    "Termination signal received while waiting for Accessibility permission. Exiting.",
-                );
-                return Ok(());
+    if is_interactive {
+        if !check_accessibility(false) {
+            check_accessibility(true);
+            return Err("Accessibility permission is not granted.\n\
+                 Please enable Accessibility permission for MacDebounce in:\n\
+                   System Settings -> Privacy & Security -> Accessibility\n\
+                 Then run macdebounce again, or verify with 'macdebounce --status'."
+                .to_string());
+        }
+    } else {
+        // Background service mode (launchd):
+        // Give macOS Accessibility / TCC subsystem a brief grace period at startup.
+        // When started by launchd at login (RunAtLoad), TCC/Accessibility services may take a
+        // moment to initialize and report the trusted state.
+        let mut trusted = check_accessibility(false);
+        if !trusted {
+            for _ in 0..6 {
+                if TERMINATING.load(Ordering::SeqCst) {
+                    log_info(
+                        "Termination signal received while waiting for Accessibility permission. Exiting.",
+                    );
+                    return Ok(());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                if check_accessibility(false) {
+                    trusted = true;
+                    break;
+                }
             }
-            std::thread::sleep(std::time::Duration::from_millis(1000));
         }
 
-        log_info("Accessibility permission granted! Proceeding with startup...");
+        // If still not granted after the grace period, trigger the system prompt once,
+        // then wait for the user to grant permission in System Settings.
+        if !trusted {
+            log_warn("Accessibility permission is not granted yet.");
+            log_warn(
+                "Requesting Accessibility permission (System Settings -> Privacy & Security -> Accessibility)...",
+            );
+            check_accessibility(true);
+
+            log_warn("Waiting for Accessibility permission to be granted in System Settings...");
+            log_warn(
+                "MacDebounce will automatically resume once permission is enabled (no restart required).",
+            );
+
+            while !check_accessibility(false) {
+                if TERMINATING.load(Ordering::SeqCst) {
+                    log_info(
+                        "Termination signal received while waiting for Accessibility permission. Exiting.",
+                    );
+                    return Ok(());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1000));
+            }
+
+            log_info("Accessibility permission granted! Proceeding with startup...");
+        }
     }
 
     let selection = config.selection;

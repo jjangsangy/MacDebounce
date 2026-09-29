@@ -8,6 +8,77 @@ use crate::debounce::ButtonSelection;
 use crate::event_tap::check_accessibility;
 
 pub const LAUNCHD_LABEL: &str = "com.macdebounce.daemon";
+pub const SIGNING_IDENTIFIER: &str = "com.macdebounce.daemon";
+
+pub fn sign_binary(binary_path: &Path) -> Result<(), String> {
+    // If the binary already satisfies its designated requirement, do not touch it
+    if let Some(status) = check_signature_status(binary_path) {
+        if status.contains("[VALID]") {
+            return Ok(());
+        }
+    }
+
+    let req = format!("designated => identifier \"{SIGNING_IDENTIFIER}\"");
+    let path_str = binary_path
+        .to_str()
+        .ok_or_else(|| "Invalid UTF-8 in binary path".to_string())?;
+
+    // Codesign must only be run directly in place. Never overwrite binary bytes in-place
+    // with file writes, as that causes macOS kernel code-signing cache taint (SIGKILL).
+    let res = Command::new("codesign")
+        .args([
+            "--force",
+            "-s",
+            "-",
+            "-i",
+            SIGNING_IDENTIFIER,
+            &format!("-r={req}"),
+            path_str,
+        ])
+        .output();
+
+    match res {
+        Ok(out) if out.status.success() => Ok(()),
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            Err(format!(
+                "codesign failed for {}: {stderr}. Administrator privileges may be required.",
+                binary_path.display()
+            ))
+        }
+        Err(e) => Err(format!("Failed to execute codesign: {e}")),
+    }
+}
+
+pub fn check_signature_status(binary_path: &Path) -> Option<String> {
+    let path_str = binary_path.to_str()?;
+    let output = Command::new("codesign")
+        .args(["-v", "--verbose=4", path_str])
+        .output()
+        .ok()?;
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let combined = format!("{stdout}\n{stderr}");
+
+    if output.status.success() {
+        if combined.contains("satisfies its Designated Requirement") {
+            Some("[VALID] (stable designated requirement)".to_string())
+        } else {
+            Some("[VALID]".to_string())
+        }
+    } else if combined.contains("does not satisfy its designated Requirement") {
+        Some("[MISMATCH] (run `macdebounce --install-launchd` to repair)".to_string())
+    } else {
+        Some("[NOT SIGNED]".to_string())
+    }
+}
+
+pub fn get_log_dir() -> Result<PathBuf, String> {
+    let home =
+        env::var_os("HOME").ok_or_else(|| "HOME environment variable is not set".to_string())?;
+    Ok(PathBuf::from(home).join("Library/Logs"))
+}
 
 pub fn get_launch_agents_dir() -> Result<PathBuf, String> {
     let home =
@@ -20,10 +91,30 @@ pub fn get_plist_path() -> Result<PathBuf, String> {
     Ok(dir.join(format!("{LAUNCHD_LABEL}.plist")))
 }
 
-pub fn get_log_dir() -> Result<PathBuf, String> {
-    let home =
-        env::var_os("HOME").ok_or_else(|| "HOME environment variable is not set".to_string())?;
-    Ok(PathBuf::from(home).join("Library/Logs"))
+pub fn get_service_status() -> Option<u32> {
+    let output = Command::new("launchctl")
+        .args(["list", LAUNCHD_LABEL])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("\"PID\" =") {
+            let parts: Vec<&str> = trimmed.split('=').collect();
+            if parts.len() == 2 {
+                let pid_str = parts[1].trim().trim_end_matches(';').trim();
+                if let Ok(pid) = pid_str.parse::<u32>() {
+                    return Some(pid);
+                }
+            }
+        }
+    }
+    None
 }
 
 pub fn generate_plist_string(binary_path: &Path, config: &Config) -> Result<String, String> {
@@ -152,7 +243,7 @@ pub fn install_launchd(config: &Config) -> Result<(), String> {
 
     let target_domain = format!("gui/{uid_output}");
 
-    // Unload existing service if already running
+    // 1. Unload existing service first so running binary is stopped cleanly
     let _ = Command::new("launchctl")
         .args(["bootout", &format!("{target_domain}/{LAUNCHD_LABEL}")])
         .output();
@@ -160,7 +251,14 @@ pub fn install_launchd(config: &Config) -> Result<(), String> {
         .args(["unload", plist_path_str])
         .output();
 
-    // Load new service
+    // 2. Ensure canonical binary has a stable identifier and designated requirement
+    // BEFORE starting launchd service, so macOS TCC Accessibility permissions persist
+    // across reboots and logins.
+    if let Err(err) = sign_binary(&canonical_exe) {
+        eprintln!("Notice: {err}");
+    }
+
+    // 3. Load new service
     let boot_res = Command::new("launchctl")
         .args(["bootstrap", &target_domain, plist_path_str])
         .output();
@@ -187,20 +285,6 @@ pub fn install_launchd(config: &Config) -> Result<(), String> {
             plist_path.display()
         );
         println!("  launchctl load {}", plist_path.display());
-    }
-
-    // Attempt to ensure canonical binary has a stable designated requirement
-    // so TCC Accessibility permissions persist across updates
-    if let Some(path_str) = canonical_exe.to_str() {
-        let _ = Command::new("codesign")
-            .args([
-                "--force",
-                "-s",
-                "-",
-                "-r=designated => identifier \"com.macdebounce.daemon\"",
-                path_str,
-            ])
-            .output();
     }
 
     // Check accessibility status and advise
@@ -275,5 +359,26 @@ mod tests {
         assert!(plist_xml.contains("<key>KeepAlive</key>"));
         assert!(plist_xml.contains("<key>SuccessfulExit</key>\n        <false/>"));
         assert!(plist_xml.contains("<key>Crashed</key>\n        <true/>"));
+    }
+
+    #[test]
+    fn test_sign_binary_and_check_signature_status() {
+        let current_exe = env::current_exe().expect("failed to get current_exe");
+        let temp_dir = env::temp_dir();
+        let temp_bin = temp_dir.join(format!("test_macdebounce_{}", std::process::id()));
+
+        fs::copy(&current_exe, &temp_bin).expect("failed to copy test binary");
+
+        let sign_res = sign_binary(&temp_bin);
+        assert!(sign_res.is_ok(), "signing failed: {:?}", sign_res.err());
+
+        let status = check_signature_status(&temp_bin);
+        assert!(
+            status.as_deref() == Some("[VALID] (stable designated requirement)"),
+            "unexpected status: {:?}",
+            status
+        );
+
+        let _ = fs::remove_file(&temp_bin);
     }
 }
