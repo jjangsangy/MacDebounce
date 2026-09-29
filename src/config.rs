@@ -1,0 +1,391 @@
+use std::env;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use clap::Parser;
+
+use crate::debounce::{ButtonSelection, MAX_BUTTONS};
+
+#[derive(Parser, Debug)]
+#[command(
+    name = "macdebounce",
+    author,
+    version,
+    about = "Minimal macOS mouse key debouncer with 0.0% idle CPU and launchctl support",
+    long_about = "A lightweight background daemon to eliminate mouse chatter and accidental double clicks on macOS with 0.0% idle CPU usage."
+)]
+pub struct Cli {
+    /// Debounce lockout window in milliseconds (default: 50)
+    #[arg(short = 'd', long = "debounce-ms", value_name = "MS")]
+    pub debounce_ms: Option<u64>,
+
+    /// Buttons to debounce ("all", "left", "right", "middle", "back", "forward", "side", "left,right", "0,1,2")
+    #[arg(short = 'b', long = "buttons", value_name = "BUTTONS")]
+    pub buttons: Option<String>,
+
+    /// Path to TOML configuration file
+    #[arg(short = 'c', long = "config", value_name = "FILE")]
+    pub config: Option<PathBuf>,
+
+    /// Log each debounced click to stdout (useful for testing)
+    #[arg(short = 'v', long = "verbose")]
+    pub verbose: bool,
+
+    /// Display current accessibility status and launchd service state
+    #[arg(long = "status")]
+    pub status: bool,
+
+    /// Install and load background LaunchAgent for current user
+    #[arg(long = "install-launchd")]
+    pub install_launchd: bool,
+
+    /// Unload and remove the background LaunchAgent
+    #[arg(long = "uninstall-launchd")]
+    pub uninstall_launchd: bool,
+
+    /// Print LaunchAgent plist XML to stdout and exit
+    #[arg(long = "generate-plist")]
+    pub generate_plist: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Config {
+    pub debounce_ms: u64,
+    pub selection: ButtonSelection,
+    pub verbose: bool,
+    pub config_file_path: Option<PathBuf>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            debounce_ms: 50,
+            selection: ButtonSelection::All,
+            verbose: false,
+            config_file_path: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CliAction {
+    Run(Config),
+    InstallLaunchd(Config),
+    UninstallLaunchd,
+    GeneratePlist(Config),
+    Status,
+}
+
+impl Config {
+    /// Parse button string into ButtonSelection.
+    /// Supports "all", "left", "right", "middle", numbers like "0,1,2", or "button3".
+    pub fn parse_buttons(input: &str) -> Result<ButtonSelection, String> {
+        let trimmed = input.trim();
+        if trimmed.eq_ignore_ascii_case("all") {
+            return Ok(ButtonSelection::All);
+        }
+
+        let mut mask: u32 = 0;
+        for part in trimmed.split(',') {
+            let p = part.trim();
+            if p.is_empty() {
+                continue;
+            }
+
+            match p.to_ascii_lowercase().as_str() {
+                "left" | "l" => mask |= 1 << crate::debounce::BUTTON_LEFT,
+                "right" | "r" => mask |= 1 << crate::debounce::BUTTON_RIGHT,
+                "middle" | "m" => mask |= 1 << crate::debounce::BUTTON_MIDDLE,
+                "back" | "backward" | "backwards" => mask |= 1 << crate::debounce::BUTTON_BACK,
+                "forward" | "foreward" | "front" => mask |= 1 << crate::debounce::BUTTON_FORWARD,
+                "side" | "sides" => {
+                    mask |= (1 << crate::debounce::BUTTON_BACK)
+                        | (1 << crate::debounce::BUTTON_FORWARD);
+                }
+                s if s.starts_with("button") => {
+                    let num_str = &s["button".len()..];
+                    let btn_idx = num_str
+                        .parse::<usize>()
+                        .map_err(|_| format!("Invalid button format: '{p}'"))?;
+                    if btn_idx >= MAX_BUTTONS {
+                        return Err(format!(
+                            "Button index {btn_idx} out of range (max is {})",
+                            MAX_BUTTONS - 1
+                        ));
+                    }
+                    mask |= 1 << btn_idx;
+                }
+                s => {
+                    let btn_idx = s
+                        .parse::<usize>()
+                        .map_err(|_| format!("Unknown button identifier: '{p}' (expected 'left', 'right', 'middle', 'back', 'forward', 'side', or button index 0-31)"))?;
+                    if btn_idx >= MAX_BUTTONS {
+                        return Err(format!(
+                            "Button index {btn_idx} out of range (max is {})",
+                            MAX_BUTTONS - 1
+                        ));
+                    }
+                    mask |= 1 << btn_idx;
+                }
+            }
+        }
+
+        if mask == 0 {
+            Err("No valid buttons specified".to_string())
+        } else {
+            Ok(ButtonSelection::Specific(mask))
+        }
+    }
+
+    /// Read config file from a given path or try default system locations.
+    pub fn load_from_file_or_defaults(explicit_path: Option<&Path>) -> (Self, Option<PathBuf>) {
+        if let Some(path) = explicit_path {
+            if let Ok(content) = fs::read_to_string(path) {
+                if let Ok(cfg) = Self::parse_toml_str(&content) {
+                    let mut res = cfg;
+                    res.config_file_path = Some(path.to_path_buf());
+                    return (res, Some(path.to_path_buf()));
+                }
+            }
+            return (Self::default(), None);
+        }
+
+        // Search default locations
+        if let Some(home) = env::var_os("HOME") {
+            let user_cfg = PathBuf::from(home).join(".config/macdebounce/config.toml");
+            if user_cfg.is_file() {
+                if let Ok(content) = fs::read_to_string(&user_cfg) {
+                    if let Ok(cfg) = Self::parse_toml_str(&content) {
+                        let mut res = cfg;
+                        res.config_file_path = Some(user_cfg.clone());
+                        return (res, Some(user_cfg));
+                    }
+                }
+            }
+        }
+
+        let sys_cfg = Path::new("/Library/Application Support/MacDebounce/config.toml");
+        if sys_cfg.is_file() {
+            if let Ok(content) = fs::read_to_string(sys_cfg) {
+                if let Ok(cfg) = Self::parse_toml_str(&content) {
+                    let mut res = cfg;
+                    res.config_file_path = Some(sys_cfg.to_path_buf());
+                    return (res, Some(sys_cfg.to_path_buf()));
+                }
+            }
+        }
+
+        (Self::default(), None)
+    }
+
+    /// Parse a simple TOML configuration file
+    pub fn parse_toml_str(content: &str) -> Result<Self, String> {
+        let mut cfg = Self::default();
+
+        for (line_no, line) in content.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with(';') {
+                continue;
+            }
+
+            if let Some((raw_key, raw_val)) = trimmed.split_once('=') {
+                let key = raw_key.trim().to_ascii_lowercase();
+                let mut val = raw_val.trim();
+
+                // Strip trailing comment if present
+                if let Some((v, _)) = val.split_once('#') {
+                    val = v.trim();
+                }
+
+                match key.as_str() {
+                    "debounce_ms" => {
+                        let ms = val.parse::<u64>().map_err(|_| {
+                            format!("Line {}: invalid debounce_ms value", line_no + 1)
+                        })?;
+                        cfg.debounce_ms = ms;
+                    }
+                    "buttons" => {
+                        if val.starts_with('[') && val.ends_with(']') {
+                            let inner = &val[1..val.len() - 1];
+                            let mut combined = String::new();
+                            for item in inner.split(',') {
+                                let item_clean = item.trim().trim_matches('"').trim_matches('\'');
+                                if !combined.is_empty() {
+                                    combined.push(',');
+                                }
+                                combined.push_str(item_clean);
+                            }
+                            cfg.selection = Self::parse_buttons(&combined)?;
+                        } else {
+                            let clean = val.trim_matches('"').trim_matches('\'');
+                            cfg.selection = Self::parse_buttons(clean)?;
+                        }
+                    }
+                    "verbose" => {
+                        cfg.verbose = val.parse::<bool>().unwrap_or(false);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        Ok(cfg)
+    }
+
+    /// Convert parsed CLI arguments into the appropriate CliAction
+    pub fn process_cli(cli: Cli) -> Result<CliAction, String> {
+        if cli.uninstall_launchd {
+            return Ok(CliAction::UninstallLaunchd);
+        }
+
+        if cli.status {
+            return Ok(CliAction::Status);
+        }
+
+        // Load config from file or defaults
+        let (mut config, found_path) = Self::load_from_file_or_defaults(cli.config.as_deref());
+        if cli.config.is_some() {
+            config.config_file_path = found_path;
+        }
+
+        // Apply CLI overrides
+        if let Some(ms) = cli.debounce_ms {
+            config.debounce_ms = ms;
+        }
+        if let Some(ref btns) = cli.buttons {
+            config.selection = Self::parse_buttons(btns)?;
+        }
+        if cli.verbose {
+            config.verbose = true;
+        }
+
+        if cli.generate_plist {
+            return Ok(CliAction::GeneratePlist(config));
+        }
+
+        if cli.install_launchd {
+            return Ok(CliAction::InstallLaunchd(config));
+        }
+
+        Ok(CliAction::Run(config))
+    }
+
+    /// Formats the selected buttons for display
+    pub fn format_buttons_summary(&self) -> String {
+        match self.selection {
+            ButtonSelection::All => "all (Left, Right, Middle, Extra buttons)".to_string(),
+            ButtonSelection::Specific(mask) => {
+                let mut names = Vec::new();
+                for i in 0..MAX_BUTTONS {
+                    if (mask & (1 << i)) != 0 {
+                        names.push(crate::debounce::button_name(i).to_string());
+                    }
+                }
+                if names.is_empty() {
+                    "none".to_string()
+                } else {
+                    names.join(", ")
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_buttons() {
+        assert_eq!(Config::parse_buttons("all").unwrap(), ButtonSelection::All);
+        assert_eq!(Config::parse_buttons("ALL").unwrap(), ButtonSelection::All);
+
+        assert_eq!(
+            Config::parse_buttons("left").unwrap(),
+            ButtonSelection::Specific(1 << 0)
+        );
+        assert_eq!(
+            Config::parse_buttons("right").unwrap(),
+            ButtonSelection::Specific(1 << 1)
+        );
+        assert_eq!(
+            Config::parse_buttons("middle").unwrap(),
+            ButtonSelection::Specific(1 << 2)
+        );
+        assert_eq!(
+            Config::parse_buttons("back").unwrap(),
+            ButtonSelection::Specific(1 << 3)
+        );
+        assert_eq!(
+            Config::parse_buttons("forward").unwrap(),
+            ButtonSelection::Specific(1 << 4)
+        );
+        assert_eq!(
+            Config::parse_buttons("foreward").unwrap(),
+            ButtonSelection::Specific(1 << 4)
+        );
+        assert_eq!(
+            Config::parse_buttons("side").unwrap(),
+            ButtonSelection::Specific((1 << 3) | (1 << 4))
+        );
+        assert_eq!(
+            Config::parse_buttons("left,back,forward").unwrap(),
+            ButtonSelection::Specific((1 << 0) | (1 << 3) | (1 << 4))
+        );
+        assert_eq!(
+            Config::parse_buttons("left,right").unwrap(),
+            ButtonSelection::Specific((1 << 0) | (1 << 1))
+        );
+        assert_eq!(
+            Config::parse_buttons("0,1,2").unwrap(),
+            ButtonSelection::Specific((1 << 0) | (1 << 1) | (1 << 2))
+        );
+        assert_eq!(
+            Config::parse_buttons("button3, button4").unwrap(),
+            ButtonSelection::Specific((1 << 3) | (1 << 4))
+        );
+    }
+
+    #[test]
+    fn test_parse_toml() {
+        let toml_str = r#"
+            # MacDebounce config
+            debounce_ms = 45
+            buttons = ["left", "right"]
+            verbose = true
+        "#;
+        let cfg = Config::parse_toml_str(toml_str).unwrap();
+        assert_eq!(cfg.debounce_ms, 45);
+        assert_eq!(
+            cfg.selection,
+            ButtonSelection::Specific((1 << 0) | (1 << 1))
+        );
+        assert_eq!(cfg.verbose, true);
+
+        let toml_all = r#"
+            debounce_ms = 60
+            buttons = "all"
+        "#;
+        let cfg_all = Config::parse_toml_str(toml_all).unwrap();
+        assert_eq!(cfg_all.debounce_ms, 60);
+        assert_eq!(cfg_all.selection, ButtonSelection::All);
+    }
+
+    #[test]
+    fn test_clap_parsing() {
+        let cli = Cli::parse_from(["macdebounce", "-d", "40", "-b", "left", "-v"]);
+        assert_eq!(cli.debounce_ms, Some(40));
+        assert_eq!(cli.buttons.as_deref(), Some("left"));
+        assert!(cli.verbose);
+
+        let action = Config::process_cli(cli).unwrap();
+        match action {
+            CliAction::Run(cfg) => {
+                assert_eq!(cfg.debounce_ms, 40);
+                assert_eq!(cfg.selection, ButtonSelection::Specific(1 << 0));
+                assert!(cfg.verbose);
+            }
+            _ => panic!("Expected CliAction::Run"),
+        }
+    }
+}

@@ -1,0 +1,32 @@
+# MacDebounce Configuration Example
+#
+# Place this file at:
+#   ~/.config/macdebounce/config.toml
+# or
+#   /Library/Application Support/MacDebounce/config.toml
+#
+# Or pass explicitly with:
+#   macdebounce --config /path/to/config.toml
+
+# Debounce lockout window in milliseconds.
+# Any mouse-down event arriving within this window after the previous click
+# or previous release is identified as switch chatter and dropped.
+# Default: 50
+debounce_ms = 50
+
+# Target mouse buttons to debounce:
+# Options:
+#   "all"                      - Debounce all mouse presses (Left, Right, Middle, Extra)
+#   ["left"]                   - Only debounce Left mouse button (Button 0)
+#   ["left", "right"]          - Debounce Left and Right mouse buttons
+#   ["left", "middle"]         - Debounce Left and Middle mouse buttons
+#   ["back", "forward"]        - Side navigation buttons (Button 3 & 4)
+#   ["side"]                   - Shorthand for both Back and Forward buttons
+#   [0, 1, 2, 3, 4]            - Numeric button indices
+# Default: "all"
+buttons = "all"
+
+# Verbose logging to stdout/stderr.
+# Useful for observing chattering clicks in the terminal during testing.
+# Default: false
+verbose = false

@@ -1,0 +1,9 @@
+[package]
+name = "macdebounce"
+version = "0.1.0"
+edition = "2024"
+authors = ["MacDebounce Contributors"]
+description = "Minimal macOS mouse key debouncer with 0.0% idle CPU and launchctl support"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
