@@ -1,5 +1,10 @@
 # MacDebounce
 
+[![Test](https://github.com/jjangsangy/MacDebounce/actions/workflows/test.yml/badge.svg)](https://github.com/jjangsangy/MacDebounce/actions/workflows/test.yml)
+[![Release](https://img.shields.io/github/v/release/jjangsangy/MacDebounce)](https://github.com/jjangsangy/MacDebounce/releases)
+[![Platform](https://img.shields.io/badge/platform-macOS-black?logo=apple&logoColor=white)](https://apple.com)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A minimal, ultra-low-overhead macOS mouse key debounce daemon written in pure Rust.
 
 Designed to eliminate physical switch chatter and accidental double-clicks from worn or sensitive mouse microswitches (Logitech, Razer, Apple Magic Mouse, Zowie, etc.) without introducing perceptible input lag.

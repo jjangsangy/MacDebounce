@@ -21,6 +21,12 @@ if [ "$(uname -s)" != "Darwin" ]; then
 fi
 
 INSTALL_DIR="${INSTALL_DIR:-${1:-/usr/local/bin}}"
+
+# Expand leading tilde if passed as literal string
+case "$INSTALL_DIR" in
+  "~"*) INSTALL_DIR="$HOME${INSTALL_DIR#"~"}" ;;
+esac
+
 REPO="jjangsangy/MacDebounce"
 TAG="${MACDEBOUNCE_VERSION:-latest}"
 
@@ -46,9 +52,34 @@ fi
 
 tar -xzf "$TMP_DIR/macdebounce.tar.gz" -C "$TMP_DIR"
 
-mkdir -p "$INSTALL_DIR"
-mv "$TMP_DIR/macdebounce" "$INSTALL_DIR/macdebounce"
-chmod +x "$INSTALL_DIR/macdebounce"
+use_sudo=0
+if [ "$(id -u)" -ne 0 ]; then
+  if [ -d "$INSTALL_DIR" ]; then
+    if [ ! -w "$INSTALL_DIR" ]; then
+      use_sudo=1
+    fi
+  else
+    parent="$(dirname "$INSTALL_DIR")"
+    while [ ! -d "$parent" ] && [ "$parent" != "/" ]; do
+      parent="$(dirname "$parent")"
+    done
+    if [ ! -w "$parent" ]; then
+      use_sudo=1
+    fi
+  fi
+fi
+
+if [ "$use_sudo" -eq 1 ]; then
+  echo "Installing to $INSTALL_DIR requires administrator privileges."
+  sudo -v
+  sudo mkdir -p "$INSTALL_DIR"
+  sudo mv "$TMP_DIR/macdebounce" "$INSTALL_DIR/macdebounce"
+  sudo chmod +x "$INSTALL_DIR/macdebounce"
+else
+  mkdir -p "$INSTALL_DIR"
+  mv "$TMP_DIR/macdebounce" "$INSTALL_DIR/macdebounce"
+  chmod +x "$INSTALL_DIR/macdebounce"
+fi
 
 echo "Successfully installed macdebounce to $INSTALL_DIR/macdebounce"
 
