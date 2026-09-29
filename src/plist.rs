@@ -381,4 +381,10 @@ mod tests {
 
         let _ = fs::remove_file(&temp_bin);
     }
+
+    #[test]
+    fn test_get_service_status() {
+        // Calling get_service_status should run launchctl safely and return Option<u32>
+        let _ = get_service_status();
+    }
 }

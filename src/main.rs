@@ -10,7 +10,9 @@ use std::process;
 use clap::Parser;
 use config::{Cli, CliAction, Config};
 use event_tap::{check_accessibility, run_event_tap};
-use plist::{LAUNCHD_LABEL, get_plist_path, install_launchd, uninstall_launchd};
+use plist::{
+    LAUNCHD_LABEL, get_plist_path, get_service_status, install_launchd, uninstall_launchd,
+};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -43,8 +45,16 @@ fn print_status() {
                 plist_path.display()
             );
             println!("  Service label:          {LAUNCHD_LABEL}");
+            if let Some(pid) = get_service_status() {
+                println!("  Service status:         [RUNNING] (PID: {pid})");
+            } else {
+                println!("  Service status:         [NOT RUNNING]");
+            }
         } else {
             println!("LaunchAgent plist:        [NOT INSTALLED]");
+            if let Some(pid) = get_service_status() {
+                println!("  Service status:         [RUNNING] (PID: {pid})");
+            }
         }
     }
 
