@@ -3,7 +3,7 @@ use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 use crate::config::Config;
-use crate::debounce::{DebounceAction, Debouncer, DropReason, button_name};
+use crate::debounce::{DebounceAction, Debouncer, DropReason, MouseButton};
 use crate::logger::{init as init_logger, log_debug, log_error, log_info, log_trace};
 
 // macOS CoreGraphics / CoreFoundation FFI types
@@ -144,18 +144,18 @@ unsafe extern "C" fn event_tap_callback(
         return event;
     }
 
-    let (button_idx, is_down) = match event_type {
-        CG_EVENT_LEFT_MOUSE_DOWN => (0, true),
-        CG_EVENT_LEFT_MOUSE_UP => (0, false),
-        CG_EVENT_RIGHT_MOUSE_DOWN => (1, true),
-        CG_EVENT_RIGHT_MOUSE_UP => (1, false),
+    let (button, is_down) = match event_type {
+        CG_EVENT_LEFT_MOUSE_DOWN => (MouseButton::LEFT, true),
+        CG_EVENT_LEFT_MOUSE_UP => (MouseButton::LEFT, false),
+        CG_EVENT_RIGHT_MOUSE_DOWN => (MouseButton::RIGHT, true),
+        CG_EVENT_RIGHT_MOUSE_UP => (MouseButton::RIGHT, false),
         CG_EVENT_OTHER_MOUSE_DOWN => {
             let num = unsafe { CGEventGetIntegerValueField(event, CG_MOUSE_EVENT_BUTTON_NUMBER) };
-            (num.max(0) as usize, true)
+            (MouseButton::new(num.max(0) as usize), true)
         }
         CG_EVENT_OTHER_MOUSE_UP => {
             let num = unsafe { CGEventGetIntegerValueField(event, CG_MOUSE_EVENT_BUTTON_NUMBER) };
-            (num.max(0) as usize, false)
+            (MouseButton::new(num.max(0) as usize), false)
         }
         _ => return event,
     };
@@ -163,18 +163,19 @@ unsafe extern "C" fn event_tap_callback(
     let timestamp_ns = unsafe { CGEventGetTimestamp(event) };
 
     let action = if is_down {
-        ctx.debouncer.process_down(button_idx, timestamp_ns)
+        ctx.debouncer.process_down(button, timestamp_ns)
     } else {
-        ctx.debouncer.process_up(button_idx, timestamp_ns)
+        ctx.debouncer.process_up(button, timestamp_ns)
     };
 
-    let name = button_name(button_idx);
+    let name = button.name();
+    let btn_idx = button.index();
     let state_str = if is_down { "DOWN" } else { "UP  " };
 
     match action {
         DebounceAction::Pass => {
             log_trace(&format!(
-                "Mouse {state_str}: {name} (btn {button_idx}) at {timestamp_ns}ns -> Accepted"
+                "Mouse {state_str}: {name} (btn {btn_idx}) at {timestamp_ns}ns -> Accepted"
             ));
             event
         }
@@ -191,11 +192,11 @@ unsafe extern "C" fn event_tap_callback(
             };
 
             log_debug(&format!(
-                "[DEBOUNCED] {name} button (btn {button_idx}): {reason_desc}"
+                "[DEBOUNCED] {name} button (btn {btn_idx}): {reason_desc}"
             ));
 
             log_trace(&format!(
-                "Mouse {state_str}: {name} (btn {button_idx}) at {timestamp_ns}ns -> Dropped ({reason_desc})"
+                "Mouse {state_str}: {name} (btn {btn_idx}) at {timestamp_ns}ns -> Dropped ({reason_desc})"
             ));
 
             // Return null to drop the event from reaching other apps

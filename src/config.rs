@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use clap::Parser;
 
-use crate::debounce::{ButtonSelection, MAX_BUTTONS};
+use crate::debounce::{ButtonSelection, MAX_BUTTONS, MouseButton};
 use crate::logger::LogLevel;
 
 #[derive(Parser, Debug)]
@@ -120,14 +120,13 @@ impl Config {
             }
 
             match p.to_ascii_lowercase().as_str() {
-                "left" | "l" => mask |= 1 << crate::debounce::BUTTON_LEFT,
-                "right" | "r" => mask |= 1 << crate::debounce::BUTTON_RIGHT,
-                "middle" | "m" => mask |= 1 << crate::debounce::BUTTON_MIDDLE,
-                "back" | "backward" | "backwards" => mask |= 1 << crate::debounce::BUTTON_BACK,
-                "forward" | "foreward" | "front" => mask |= 1 << crate::debounce::BUTTON_FORWARD,
+                "left" | "l" => mask |= MouseButton::LEFT.mask(),
+                "right" | "r" => mask |= MouseButton::RIGHT.mask(),
+                "middle" | "m" => mask |= MouseButton::MIDDLE.mask(),
+                "back" | "backward" | "backwards" => mask |= MouseButton::BACK.mask(),
+                "forward" | "foreward" | "front" => mask |= MouseButton::FORWARD.mask(),
                 "side" | "sides" => {
-                    mask |= (1 << crate::debounce::BUTTON_BACK)
-                        | (1 << crate::debounce::BUTTON_FORWARD);
+                    mask |= MouseButton::BACK.mask() | MouseButton::FORWARD.mask();
                 }
                 s if s.starts_with("button") => {
                     let num_str = &s["button".len()..];
@@ -140,7 +139,7 @@ impl Config {
                             MAX_BUTTONS - 1
                         ));
                     }
-                    mask |= 1 << btn_idx;
+                    mask |= MouseButton::new(btn_idx).mask();
                 }
                 s => {
                     let btn_idx = s
@@ -152,7 +151,7 @@ impl Config {
                             MAX_BUTTONS - 1
                         ));
                     }
-                    mask |= 1 << btn_idx;
+                    mask |= MouseButton::new(btn_idx).mask();
                 }
             }
         }
@@ -343,8 +342,9 @@ impl Config {
             ButtonSelection::Specific(mask) => {
                 let mut names = Vec::new();
                 for i in 0..MAX_BUTTONS {
-                    if (mask & (1 << i)) != 0 {
-                        names.push(crate::debounce::button_name(i).to_string());
+                    let btn = MouseButton::new(i);
+                    if (mask & btn.mask()) != 0 {
+                        names.push(btn.name().to_string());
                     }
                 }
                 if names.is_empty() {

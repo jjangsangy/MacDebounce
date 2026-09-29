@@ -1,19 +1,61 @@
-/// Button identification and names
-pub const BUTTON_LEFT: usize = 0;
-pub const BUTTON_RIGHT: usize = 1;
-pub const BUTTON_MIDDLE: usize = 2;
-pub const BUTTON_BACK: usize = 3;
-pub const BUTTON_FORWARD: usize = 4;
+/// Maximum number of mouse buttons supported for debouncing.
 pub const MAX_BUTTONS: usize = 32;
 
-pub fn button_name(button_idx: usize) -> &'static str {
-    match button_idx {
-        BUTTON_LEFT => "Left",
-        BUTTON_RIGHT => "Right",
-        BUTTON_MIDDLE => "Middle",
-        BUTTON_BACK => "Back",
-        BUTTON_FORWARD => "Forward",
-        _ => "Other",
+/// A strongly-typed newtype wrapper around a mouse button index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+pub struct MouseButton(pub usize);
+
+impl MouseButton {
+    pub const LEFT: Self = Self(0);
+    pub const RIGHT: Self = Self(1);
+    pub const MIDDLE: Self = Self(2);
+    pub const BACK: Self = Self(3);
+    pub const FORWARD: Self = Self(4);
+
+    #[inline]
+    pub const fn new(idx: usize) -> Self {
+        Self(idx)
+    }
+
+    #[inline]
+    pub const fn index(self) -> usize {
+        self.0
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::LEFT => "Left",
+            Self::RIGHT => "Right",
+            Self::MIDDLE => "Middle",
+            Self::BACK => "Back",
+            Self::FORWARD => "Forward",
+            _ => "Other",
+        }
+    }
+
+    #[inline]
+    pub const fn mask(self) -> u32 {
+        if self.0 < MAX_BUTTONS { 1 << self.0 } else { 0 }
+    }
+}
+
+impl std::fmt::Display for MouseButton {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name())
+    }
+}
+
+impl From<usize> for MouseButton {
+    #[inline]
+    fn from(idx: usize) -> Self {
+        Self(idx)
+    }
+}
+
+impl From<MouseButton> for usize {
+    #[inline]
+    fn from(btn: MouseButton) -> Self {
+        btn.0
     }
 }
 
@@ -51,12 +93,12 @@ pub enum ButtonSelection {
 }
 
 impl ButtonSelection {
-    pub fn should_debounce(&self, button_idx: usize) -> bool {
+    pub fn should_debounce(&self, button: MouseButton) -> bool {
         match self {
             ButtonSelection::All => true,
             ButtonSelection::Specific(mask) => {
-                if button_idx < MAX_BUTTONS {
-                    (mask & (1 << button_idx)) != 0
+                if button.0 < MAX_BUTTONS {
+                    (mask & button.mask()) != 0
                 } else {
                     false
                 }
@@ -74,10 +116,10 @@ impl ButtonSelection {
             ButtonSelection::All => LEFT_MASK | RIGHT_MASK | OTHER_MASK,
             ButtonSelection::Specific(mask) => {
                 let mut cg_mask = 0u64;
-                if (mask & (1 << 0)) != 0 {
+                if (mask & MouseButton::LEFT.mask()) != 0 {
                     cg_mask |= LEFT_MASK;
                 }
-                if (mask & (1 << 1)) != 0 {
+                if (mask & MouseButton::RIGHT.mask()) != 0 {
                     cg_mask |= RIGHT_MASK;
                 }
                 // Buttons 2 and above use kCGEventOtherMouseDown / Up
@@ -105,12 +147,12 @@ impl Debouncer {
         }
     }
 
-    pub fn process_down(&mut self, button_idx: usize, timestamp_ns: u64) -> DebounceAction {
-        if button_idx >= MAX_BUTTONS || !self.selection.should_debounce(button_idx) {
+    pub fn process_down(&mut self, button: MouseButton, timestamp_ns: u64) -> DebounceAction {
+        if button.0 >= MAX_BUTTONS || !self.selection.should_debounce(button) {
             return DebounceAction::Pass;
         }
 
-        let state = &mut self.buttons[button_idx];
+        let state = &mut self.buttons[button.0];
 
         // 1. If button is already pressed, this is a bounce or duplicate press
         if state.is_down {
@@ -149,12 +191,12 @@ impl Debouncer {
         DebounceAction::Pass
     }
 
-    pub fn process_up(&mut self, button_idx: usize, timestamp_ns: u64) -> DebounceAction {
-        if button_idx >= MAX_BUTTONS || !self.selection.should_debounce(button_idx) {
+    pub fn process_up(&mut self, button: MouseButton, timestamp_ns: u64) -> DebounceAction {
+        if button.0 >= MAX_BUTTONS || !self.selection.should_debounce(button) {
             return DebounceAction::Pass;
         }
 
-        let state = &mut self.buttons[button_idx];
+        let state = &mut self.buttons[button.0];
 
         // If the corresponding Down was suppressed, swallow this Up bounce too
         if state.suppressed_down {
@@ -191,8 +233,14 @@ mod tests {
     fn test_clean_single_click() {
         let mut debouncer = Debouncer::new(50, ButtonSelection::All);
 
-        assert_eq!(debouncer.process_down(0, 100 * MS), DebounceAction::Pass);
-        assert_eq!(debouncer.process_up(0, 180 * MS), DebounceAction::Pass);
+        assert_eq!(
+            debouncer.process_down(MouseButton::LEFT, 100 * MS),
+            DebounceAction::Pass
+        );
+        assert_eq!(
+            debouncer.process_up(MouseButton::LEFT, 180 * MS),
+            DebounceAction::Pass
+        );
     }
 
     #[test]
@@ -200,12 +248,24 @@ mod tests {
         let mut debouncer = Debouncer::new(50, ButtonSelection::All);
 
         // First click
-        assert_eq!(debouncer.process_down(0, 100 * MS), DebounceAction::Pass);
-        assert_eq!(debouncer.process_up(0, 160 * MS), DebounceAction::Pass);
+        assert_eq!(
+            debouncer.process_down(MouseButton::LEFT, 100 * MS),
+            DebounceAction::Pass
+        );
+        assert_eq!(
+            debouncer.process_up(MouseButton::LEFT, 160 * MS),
+            DebounceAction::Pass
+        );
 
         // Second click after 100ms (above 50ms threshold)
-        assert_eq!(debouncer.process_down(0, 260 * MS), DebounceAction::Pass);
-        assert_eq!(debouncer.process_up(0, 320 * MS), DebounceAction::Pass);
+        assert_eq!(
+            debouncer.process_down(MouseButton::LEFT, 260 * MS),
+            DebounceAction::Pass
+        );
+        assert_eq!(
+            debouncer.process_up(MouseButton::LEFT, 320 * MS),
+            DebounceAction::Pass
+        );
     }
 
     #[test]
@@ -213,26 +273,38 @@ mod tests {
         let mut debouncer = Debouncer::new(50, ButtonSelection::All);
 
         // Real click
-        assert_eq!(debouncer.process_down(0, 100 * MS), DebounceAction::Pass);
-        assert_eq!(debouncer.process_up(0, 180 * MS), DebounceAction::Pass);
+        assert_eq!(
+            debouncer.process_down(MouseButton::LEFT, 100 * MS),
+            DebounceAction::Pass
+        );
+        assert_eq!(
+            debouncer.process_up(MouseButton::LEFT, 180 * MS),
+            DebounceAction::Pass
+        );
 
         // Bounce click 15ms after release
         assert_eq!(
-            debouncer.process_down(0, 195 * MS),
+            debouncer.process_down(MouseButton::LEFT, 195 * MS),
             DebounceAction::Drop {
                 reason: DropReason::DownTooQuickAfterUp(15)
             }
         );
         assert_eq!(
-            debouncer.process_up(0, 202 * MS),
+            debouncer.process_up(MouseButton::LEFT, 202 * MS),
             DebounceAction::Drop {
                 reason: DropReason::PairedBounceUp
             }
         );
 
         // Next legitimate click after debounce period
-        assert_eq!(debouncer.process_down(0, 300 * MS), DebounceAction::Pass);
-        assert_eq!(debouncer.process_up(0, 370 * MS), DebounceAction::Pass);
+        assert_eq!(
+            debouncer.process_down(MouseButton::LEFT, 300 * MS),
+            DebounceAction::Pass
+        );
+        assert_eq!(
+            debouncer.process_up(MouseButton::LEFT, 370 * MS),
+            DebounceAction::Pass
+        );
     }
 
     #[test]
@@ -240,11 +312,14 @@ mod tests {
         let mut debouncer = Debouncer::new(50, ButtonSelection::All);
 
         // Real press
-        assert_eq!(debouncer.process_down(0, 100 * MS), DebounceAction::Pass);
+        assert_eq!(
+            debouncer.process_down(MouseButton::LEFT, 100 * MS),
+            DebounceAction::Pass
+        );
 
         // Rapid second Down while already down
         assert_eq!(
-            debouncer.process_down(0, 110 * MS),
+            debouncer.process_down(MouseButton::LEFT, 110 * MS),
             DebounceAction::Drop {
                 reason: DropReason::DuplicateDownWhileHeld
             }
@@ -252,35 +327,53 @@ mod tests {
 
         // Paired bounce up from duplicate press is swallowed
         assert_eq!(
-            debouncer.process_up(0, 115 * MS),
+            debouncer.process_up(MouseButton::LEFT, 115 * MS),
             DebounceAction::Drop {
                 reason: DropReason::PairedBounceUp
             }
         );
 
         // Final real release
-        assert_eq!(debouncer.process_up(0, 200 * MS), DebounceAction::Pass);
+        assert_eq!(
+            debouncer.process_up(MouseButton::LEFT, 200 * MS),
+            DebounceAction::Pass
+        );
     }
 
     #[test]
     fn test_selective_button_debouncing() {
         // Only debounce Left button (bit 0)
-        let mut debouncer = Debouncer::new(50, ButtonSelection::Specific(1 << 0));
+        let mut debouncer = Debouncer::new(50, ButtonSelection::Specific(MouseButton::LEFT.mask()));
 
         // Left button bounce is dropped
-        assert_eq!(debouncer.process_down(0, 100 * MS), DebounceAction::Pass);
-        assert_eq!(debouncer.process_up(0, 150 * MS), DebounceAction::Pass);
         assert_eq!(
-            debouncer.process_down(0, 160 * MS),
+            debouncer.process_down(MouseButton::LEFT, 100 * MS),
+            DebounceAction::Pass
+        );
+        assert_eq!(
+            debouncer.process_up(MouseButton::LEFT, 150 * MS),
+            DebounceAction::Pass
+        );
+        assert_eq!(
+            debouncer.process_down(MouseButton::LEFT, 160 * MS),
             DebounceAction::Drop {
                 reason: DropReason::DownTooQuickAfterUp(10)
             }
         );
 
         // Right button (button 1) is NOT debounced and always passes through immediately
-        assert_eq!(debouncer.process_down(1, 100 * MS), DebounceAction::Pass);
-        assert_eq!(debouncer.process_up(1, 150 * MS), DebounceAction::Pass);
-        assert_eq!(debouncer.process_down(1, 160 * MS), DebounceAction::Pass);
+        assert_eq!(
+            debouncer.process_down(MouseButton::RIGHT, 100 * MS),
+            DebounceAction::Pass
+        );
+        assert_eq!(
+            debouncer.process_up(MouseButton::RIGHT, 150 * MS),
+            DebounceAction::Pass
+        );
+        assert_eq!(
+            debouncer.process_down(MouseButton::RIGHT, 160 * MS),
+            DebounceAction::Pass
+        );
     }
 
     #[test]
@@ -291,35 +384,35 @@ mod tests {
             (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 25) | (1 << 26)
         );
 
-        let left_only = ButtonSelection::Specific(1 << 0);
+        let left_only = ButtonSelection::Specific(MouseButton::LEFT.mask());
         assert_eq!(left_only.cg_event_mask(), (1 << 1) | (1 << 2));
 
-        let right_only = ButtonSelection::Specific(1 << 1);
+        let right_only = ButtonSelection::Specific(MouseButton::RIGHT.mask());
         assert_eq!(right_only.cg_event_mask(), (1 << 3) | (1 << 4));
 
-        let middle_only = ButtonSelection::Specific(1 << 2);
+        let middle_only = ButtonSelection::Specific(MouseButton::MIDDLE.mask());
         assert_eq!(middle_only.cg_event_mask(), (1 << 25) | (1 << 26));
 
-        let back_only = ButtonSelection::Specific(1 << BUTTON_BACK);
+        let back_only = ButtonSelection::Specific(MouseButton::BACK.mask());
         assert_eq!(back_only.cg_event_mask(), (1 << 25) | (1 << 26));
     }
 
     #[test]
     fn test_back_forward_button_debouncing() {
         // Debounce only back button (button 3)
-        let mut debouncer = Debouncer::new(50, ButtonSelection::Specific(1 << BUTTON_BACK));
+        let mut debouncer = Debouncer::new(50, ButtonSelection::Specific(MouseButton::BACK.mask()));
 
         // Back button chatter is suppressed
         assert_eq!(
-            debouncer.process_down(BUTTON_BACK, 100 * MS),
+            debouncer.process_down(MouseButton::BACK, 100 * MS),
             DebounceAction::Pass
         );
         assert_eq!(
-            debouncer.process_up(BUTTON_BACK, 150 * MS),
+            debouncer.process_up(MouseButton::BACK, 150 * MS),
             DebounceAction::Pass
         );
         assert_eq!(
-            debouncer.process_down(BUTTON_BACK, 160 * MS),
+            debouncer.process_down(MouseButton::BACK, 160 * MS),
             DebounceAction::Drop {
                 reason: DropReason::DownTooQuickAfterUp(10)
             }
@@ -327,15 +420,15 @@ mod tests {
 
         // Forward button (button 4) is untouched and passes through immediately
         assert_eq!(
-            debouncer.process_down(BUTTON_FORWARD, 100 * MS),
+            debouncer.process_down(MouseButton::FORWARD, 100 * MS),
             DebounceAction::Pass
         );
         assert_eq!(
-            debouncer.process_up(BUTTON_FORWARD, 150 * MS),
+            debouncer.process_up(MouseButton::FORWARD, 150 * MS),
             DebounceAction::Pass
         );
         assert_eq!(
-            debouncer.process_down(BUTTON_FORWARD, 160 * MS),
+            debouncer.process_down(MouseButton::FORWARD, 160 * MS),
             DebounceAction::Pass
         );
     }
