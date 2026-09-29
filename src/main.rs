@@ -27,7 +27,7 @@ fn print_status() {
         println!("  To grant: System Settings -> Privacy & Security -> Accessibility");
     }
 
-    O// Code signature check
+    // Code signature check
     if let Ok(current_exe) = env::current_exe() {
         let canonical = std::fs::canonicalize(&current_exe).unwrap_or(current_exe);
         if let Some(sig_status) = plist::check_signature_status(&canonical) {
