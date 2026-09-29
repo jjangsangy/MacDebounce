@@ -1,0 +1,55 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & Release
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - name: Build release binaries
+        run: |
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+
+      - name: Assemble distribution binaries
+        run: |
+          mkdir -p dist/universal dist/arm64 dist/x86_64
+          cp target/aarch64-apple-darwin/release/macdebounce dist/arm64/macdebounce
+          cp target/x86_64-apple-darwin/release/macdebounce dist/x86_64/macdebounce
+          lipo -create -output dist/universal/macdebounce \
+            dist/arm64/macdebounce \
+            dist/x86_64/macdebounce
+
+      - name: Package archives & checksums
+        run: |
+          tar -czvf macdebounce-darwin-universal.tar.gz -C dist/universal macdebounce
+          tar -czvf macdebounce-darwin-arm64.tar.gz -C dist/arm64 macdebounce
+          tar -czvf macdebounce-darwin-x86_64.tar.gz -C dist/x86_64 macdebounce
+          shasum -a 256 macdebounce-darwin-*.tar.gz > checksums.txt
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            macdebounce-darwin-universal.tar.gz
+            macdebounce-darwin-arm64.tar.gz
+            macdebounce-darwin-x86_64.tar.gz
+            checksums.txt
+          generate_release_notes: true

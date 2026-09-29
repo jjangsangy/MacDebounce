@@ -17,20 +17,35 @@ Designed to eliminate physical switch chatter and accidental double-clicks from 
 
 ---
 
-## Installation & Compilation
+## Installation
 
-Ensure you have Rust installed (`cargo` and `rustc`):
+### Quick Install (Recommended)
+
+Install the latest universal macOS binary directly into your PATH (`/usr/local/bin`):
 
 ```bash
-cargo build --release
+curl -fsSL https://raw.githubusercontent.com/jjangsangy/MacDebounce/main/scripts/install.sh | sh
 ```
 
-The compiled binary will be located at `target/release/macdebounce`.
-
-To install system-wide (optional):
+You can customize the destination directory or version if desired:
 
 ```bash
-sudo cp target/release/macdebounce /usr/local/bin/
+# Install to a custom directory (e.g., ~/.local/bin)
+curl -fsSL https://raw.githubusercontent.com/jjangsangy/MacDebounce/main/scripts/install.sh | INSTALL_DIR=~/.local/bin sh
+
+# Install a specific release version
+curl -fsSL https://raw.githubusercontent.com/jjangsangy/MacDebounce/main/scripts/install.sh | MACDEBOUNCE_VERSION=0.1.0 sh
+```
+
+### Building from Source
+
+If you prefer compiling from source, ensure you have Rust installed (`cargo` and `rustc`):
+
+```bash
+git clone https://github.com/jjangsangy/MacDebounce.git
+cd MacDebounce
+cargo build --release
+cp target/release/macdebounce /usr/local/bin/
 ```
 
 ---
@@ -46,7 +61,7 @@ macOS requires accessibility permissions for any process that intercepts input e
 
 Check permission status anytime:
 ```bash
-./target/release/macdebounce --status
+macdebounce --status
 ```
 
 ---
@@ -56,7 +71,7 @@ Check permission status anytime:
 Test interactively with verbose logging to observe chatter suppression:
 
 ```bash
-./target/release/macdebounce -v
+macdebounce -v
 ```
 
 Whenever a chattering bounce click is detected, it logs to terminal:
@@ -191,7 +206,7 @@ verbose = false
 
 Run:
 ```bash
-./target/release/macdebounce --buttons left --install-launchd
+macdebounce --buttons left --install-launchd
 ```
 
 This will:
@@ -203,14 +218,14 @@ This will:
 
 To remove and stop the service:
 ```bash
-./target/release/macdebounce --uninstall-launchd
+macdebounce --uninstall-launchd
 ```
 
 ### Manual `launchctl` Setup
 
 1. Copy the binary to a permanent location:
    ```bash
-   sudo cp target/release/macdebounce /usr/local/bin/
+   cp target/release/macdebounce /usr/local/bin/
    ```
 
 2. Copy the plist template:
