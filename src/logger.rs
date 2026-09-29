@@ -19,15 +19,17 @@ const LOG_DAEMON: i32 = 3 << 3;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LogLevel {
     Error = 1,
-    Info = 2,
-    Debug = 3,
-    Trace = 4,
+    Warn = 2,
+    Info = 3,
+    Debug = 4,
+    Trace = 5,
 }
 
 impl LogLevel {
     pub fn as_str(&self) -> &'static str {
         match self {
             LogLevel::Error => "ERROR",
+            LogLevel::Warn => "WARN",
             LogLevel::Info => "INFO",
             LogLevel::Debug => "DEBUG",
             LogLevel::Trace => "TRACE",
@@ -117,6 +119,7 @@ pub fn log(level: LogLevel, message: &str) {
     if use_syslog {
         let priority = match level {
             LogLevel::Error => 3,                   // LOG_ERR
+            LogLevel::Warn => 4,                    // LOG_WARNING
             LogLevel::Info => 5,                    // LOG_NOTICE
             LogLevel::Debug | LogLevel::Trace => 7, // LOG_DEBUG
         };
@@ -131,6 +134,10 @@ pub fn log(level: LogLevel, message: &str) {
 
 pub fn log_error(msg: &str) {
     log(LogLevel::Error, msg);
+}
+
+pub fn log_warn(msg: &str) {
+    log(LogLevel::Warn, msg);
 }
 
 pub fn log_info(msg: &str) {

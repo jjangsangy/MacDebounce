@@ -260,6 +260,7 @@ impl Config {
                         cfg.log_level = match clean.as_str() {
                             "trace" | "all" => LogLevel::Trace,
                             "debug" | "verbose" => LogLevel::Debug,
+                            "warn" | "warning" => LogLevel::Warn,
                             "error" => LogLevel::Error,
                             _ => LogLevel::Info,
                         };

@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 use crate::config::Config;
 use crate::debounce::{DebounceAction, Debouncer, DropReason, MouseButton};
-use crate::logger::{init as init_logger, log_debug, log_error, log_info, log_trace};
+use crate::logger::{init as init_logger, log_debug, log_error, log_info, log_trace, log_warn};
 
 // macOS CoreGraphics / CoreFoundation FFI types
 pub type CGEventTapProxy = *mut c_void;
@@ -238,6 +238,12 @@ pub fn run_event_tap(config: Config) -> Result<(), String> {
         config.log_file.as_deref(),
     );
 
+    // Register clean signal handling early so waiting or startup can be interrupted gracefully
+    unsafe {
+        signal(SIGINT, handle_termination_signal);
+        signal(SIGTERM, handle_termination_signal);
+    }
+
     log_info(&format!(
         "MacDebounce v{} starting (debounce_ms: {}, buttons: {}, log_level: {:?}, syslog: {})",
         env!("CARGO_PKG_VERSION"),
@@ -247,14 +253,33 @@ pub fn run_event_tap(config: Config) -> Result<(), String> {
         config.use_syslog,
     ));
 
-    // 1. Check Accessibility permissions
-    if !check_accessibility(true) {
-        log_error("Accessibility permission is not granted.");
-        return Err("Accessibility permission is not granted.\n\
-             Please grant Accessibility permission for this binary in:\n\
-             System Settings -> Privacy & Security -> Accessibility\n\
-             (Then re-run or restart the launchctl service)."
-            .to_string());
+    // 1. Check Accessibility permissions.
+    // If not granted, trigger the system prompt once, then wait for the user to grant permission
+    // in System Settings without rapidly exiting or spamming system dialogs.
+    if !check_accessibility(false) {
+        log_warn("Accessibility permission is not granted yet.");
+        log_warn(
+            "Requesting Accessibility permission (System Settings -> Privacy & Security -> Accessibility)...",
+        );
+        // Trigger the system prompt dialog once
+        check_accessibility(true);
+
+        log_warn("Waiting for Accessibility permission to be granted in System Settings...");
+        log_warn(
+            "MacDebounce will automatically resume once permission is enabled (no restart required).",
+        );
+
+        while !check_accessibility(false) {
+            if TERMINATING.load(Ordering::SeqCst) {
+                log_info(
+                    "Termination signal received while waiting for Accessibility permission. Exiting.",
+                );
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1000));
+        }
+
+        log_info("Accessibility permission granted! Proceeding with startup...");
     }
 
     let selection = config.selection;
@@ -267,17 +292,32 @@ pub fn run_event_tap(config: Config) -> Result<(), String> {
 
     let context_ptr = Box::into_raw(context);
 
-    // 2. Create the event tap
-    let tap = unsafe {
-        CGEventTapCreate(
-            CG_SESSION_EVENT_TAP,
-            CG_HEAD_INSERT_EVENT_TAP,
-            CG_EVENT_TAP_OPTION_DEFAULT,
-            event_mask,
-            event_tap_callback,
-            context_ptr as *mut c_void,
-        )
-    };
+    // 2. Create the event tap (retry briefly in case macOS TCC propagation has a slight delay)
+    let mut tap = ptr::null_mut();
+    for attempt in 0..5 {
+        tap = unsafe {
+            CGEventTapCreate(
+                CG_SESSION_EVENT_TAP,
+                CG_HEAD_INSERT_EVENT_TAP,
+                CG_EVENT_TAP_OPTION_DEFAULT,
+                event_mask,
+                event_tap_callback,
+                context_ptr as *mut c_void,
+            )
+        };
+        if !tap.is_null() {
+            break;
+        }
+        if TERMINATING.load(Ordering::SeqCst) {
+            unsafe {
+                drop(Box::from_raw(context_ptr));
+            }
+            return Ok(());
+        }
+        if attempt < 4 {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+    }
 
     if tap.is_null() {
         unsafe {
@@ -308,12 +348,6 @@ pub fn run_event_tap(config: Config) -> Result<(), String> {
 
     let run_loop = unsafe { CFRunLoopGetCurrent() };
     ACTIVE_RUN_LOOP.store(run_loop as *mut c_void, Ordering::SeqCst);
-
-    // Register clean signal handling
-    unsafe {
-        signal(SIGINT, handle_termination_signal);
-        signal(SIGTERM, handle_termination_signal);
-    }
 
     unsafe {
         CFRunLoopAddSource(run_loop, run_loop_source, kCFRunLoopCommonModes);

@@ -103,7 +103,12 @@ pub fn generate_plist_string(binary_path: &Path, config: &Config) -> Result<Stri
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
-    <true/>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+        <key>Crashed</key>
+        <true/>
+    </dict>
     <key>ProcessType</key>
     <string>Interactive</string>
     <key>StandardOutPath</key>
@@ -184,19 +189,34 @@ pub fn install_launchd(config: &Config) -> Result<(), String> {
         println!("  launchctl load {}", plist_path.display());
     }
 
+    // Attempt to ensure canonical binary has a stable designated requirement
+    // so TCC Accessibility permissions persist across updates
+    if let Some(path_str) = canonical_exe.to_str() {
+        let _ = Command::new("codesign")
+            .args([
+                "--force",
+                "-s",
+                "-",
+                "-r=designated => identifier \"com.macdebounce.daemon\"",
+                path_str,
+            ])
+            .output();
+    }
+
     // Check accessibility status and advise
-    if check_accessibility(true) {
+    if check_accessibility(false) {
         println!("\n[OK] Accessibility permission is granted.");
     } else {
         println!("\n[ACTION REQUIRED] Accessibility permission needed!");
         println!("MacDebounce requires Accessibility permission to filter mouse clicks.");
         println!("  1. Open System Settings -> Privacy & Security -> Accessibility");
-        println!("  2. Add and enable: {}", canonical_exe.display());
-        println!("  3. Once enabled, restart the service:");
         println!(
-            "     launchctl kickstart -k {}/{}",
-            target_domain, LAUNCHD_LABEL
+            "  2. Enable MacDebounce (or add: {})",
+            canonical_exe.display()
         );
+        println!("  MacDebounce is running in the background and will automatically activate");
+        println!("  once permission is enabled (no restart required).");
+        let _ = check_accessibility(true);
     }
 
     println!("\nService logs are located at:");
@@ -236,4 +256,24 @@ pub fn uninstall_launchd() -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_generate_plist_string() {
+        let config = Config::default();
+        let bin_path = Path::new("/usr/local/bin/macdebounce");
+        let plist_xml = generate_plist_string(bin_path, &config).expect("failed to generate plist");
+
+        assert!(
+            plist_xml.contains("<key>Label</key>\n    <string>com.macdebounce.daemon</string>")
+        );
+        assert!(plist_xml.contains("<string>/usr/local/bin/macdebounce</string>"));
+        assert!(plist_xml.contains("<key>KeepAlive</key>"));
+        assert!(plist_xml.contains("<key>SuccessfulExit</key>\n        <false/>"));
+        assert!(plist_xml.contains("<key>Crashed</key>\n        <true/>"));
+    }
 }

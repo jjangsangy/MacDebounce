@@ -51,6 +51,7 @@ if ! curl -fsSL "$URL" -o "$TMP_DIR/macdebounce.tar.gz"; then
 fi
 
 tar -xzf "$TMP_DIR/macdebounce.tar.gz" -C "$TMP_DIR"
+codesign --force -s - -r='designated => identifier "com.macdebounce.daemon"' "$TMP_DIR/macdebounce" 2>/dev/null || true
 
 use_sudo=0
 if [ "$(id -u)" -ne 0 ]; then
@@ -75,10 +76,12 @@ if [ "$use_sudo" -eq 1 ]; then
   sudo mkdir -p "$INSTALL_DIR"
   sudo mv "$TMP_DIR/macdebounce" "$INSTALL_DIR/macdebounce"
   sudo chmod +x "$INSTALL_DIR/macdebounce"
+  sudo codesign --force -s - -r='designated => identifier "com.macdebounce.daemon"' "$INSTALL_DIR/macdebounce" 2>/dev/null || true
 else
   mkdir -p "$INSTALL_DIR"
   mv "$TMP_DIR/macdebounce" "$INSTALL_DIR/macdebounce"
   chmod +x "$INSTALL_DIR/macdebounce"
+  codesign --force -s - -r='designated => identifier "com.macdebounce.daemon"' "$INSTALL_DIR/macdebounce" 2>/dev/null || true
 fi
 
 echo "Successfully installed macdebounce to $INSTALL_DIR/macdebounce"
