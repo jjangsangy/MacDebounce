@@ -136,49 +136,24 @@ pub fn generate_plist_string(binary_path: &Path, config: &Config) -> Result<Stri
 
     let mut args_xml = format!("        <string>{bin_str}</string>\n");
 
-    // Pass configuration flags if needed
+    // Pass custom explicit --config if not at one of the default discovery locations
     if let Some(ref cfg_path) = config.config_file_path {
-        args_xml.push_str("        <string>--config</string>\n");
-        args_xml.push_str(&format!(
-            "        <string>{}</string>\n",
-            cfg_path.to_str().unwrap()
-        ));
-    } else {
-        if config.debounce_ms != 50 {
-            args_xml.push_str("        <string>--debounce-ms</string>\n");
+        let is_default_path = if let Some(home) = env::var_os("HOME") {
+            let home_p = PathBuf::from(home);
+            cfg_path == &home_p.join(".config/macdebounce/config.toml")
+                || cfg_path == &home_p.join("Library/Application Support/MacDebounce/config.toml")
+        } else {
+            false
+        } || cfg_path
+            == Path::new("/Library/Application Support/MacDebounce/config.toml");
+
+        if !is_default_path {
+            args_xml.push_str("        <string>--config</string>\n");
             args_xml.push_str(&format!(
                 "        <string>{}</string>\n",
-                config.debounce_ms
+                cfg_path.to_str().unwrap()
             ));
         }
-
-        match config.selection {
-            ButtonSelection::All => {}
-            ButtonSelection::Specific(mask) => {
-                let mut list = Vec::new();
-                for i in 0..crate::debounce::MAX_BUTTONS {
-                    if (mask & (1 << i)) != 0 {
-                        list.push(i.to_string());
-                    }
-                }
-                args_xml.push_str("        <string>--buttons</string>\n");
-                args_xml.push_str(&format!("        <string>{}</string>\n", list.join(",")));
-            }
-        }
-    }
-
-    match config.log_level {
-        crate::logger::LogLevel::Trace => {
-            args_xml.push_str("        <string>--log-all</string>\n");
-        }
-        crate::logger::LogLevel::Debug => {
-            args_xml.push_str("        <string>--verbose</string>\n");
-        }
-        _ => {}
-    }
-
-    if !config.use_syslog {
-        args_xml.push_str("        <string>--no-syslog</string>\n");
     }
 
     Ok(format!(
@@ -223,6 +198,42 @@ pub fn install_launchd(config: &Config) -> Result<(), String> {
     fs::create_dir_all(&plist_dir)
         .map_err(|e| format!("Failed to create LaunchAgents directory: {e}"))?;
     fs::create_dir_all(&log_dir).map_err(|e| format!("Failed to create Logs directory: {e}"))?;
+
+    // If no config file exists yet, create the default config file so user settings persist
+    if config.config_file_path.is_none() {
+        if let Some(home) = env::var_os("HOME") {
+            let default_cfg_dir = PathBuf::from(home).join(".config/macdebounce");
+            let default_cfg_path = default_cfg_dir.join("config.toml");
+            if !default_cfg_path.is_file() {
+                let _ = fs::create_dir_all(&default_cfg_dir);
+                let btns_str = match config.selection {
+                    ButtonSelection::All => "all".to_string(),
+                    ButtonSelection::Specific(mask) => {
+                        let mut list = Vec::new();
+                        for i in 0..crate::debounce::MAX_BUTTONS {
+                            let btn = crate::debounce::MouseButton::new(i);
+                            if (mask & btn.mask()) != 0 {
+                                list.push(match btn {
+                                    crate::debounce::MouseButton::LEFT => "left".to_string(),
+                                    crate::debounce::MouseButton::RIGHT => "right".to_string(),
+                                    crate::debounce::MouseButton::MIDDLE => "middle".to_string(),
+                                    crate::debounce::MouseButton::BACK => "back".to_string(),
+                                    crate::debounce::MouseButton::FORWARD => "forward".to_string(),
+                                    _ => format!("button{i}"),
+                                });
+                            }
+                        }
+                        list.join(",")
+                    }
+                };
+                let content = format!(
+                    "# MacDebounce Configuration\ndebounce_ms = {}\nbuttons = \"{}\"\nlog_level = \"{:?}\"\nsyslog = {}\n",
+                    config.debounce_ms, btns_str, config.log_level, config.use_syslog,
+                );
+                let _ = fs::write(&default_cfg_path, content);
+            }
+        }
+    }
 
     let plist_path = get_plist_path()?;
     let plist_content = generate_plist_string(&canonical_exe, config)?;
@@ -356,6 +367,8 @@ mod tests {
             plist_xml.contains("<key>Label</key>\n    <string>com.macdebounce.daemon</string>")
         );
         assert!(plist_xml.contains("<string>/usr/local/bin/macdebounce</string>"));
+        assert!(!plist_xml.contains("--buttons"));
+        assert!(!plist_xml.contains("--debounce-ms"));
         assert!(plist_xml.contains("<key>KeepAlive</key>"));
         assert!(plist_xml.contains("<key>SuccessfulExit</key>\n        <false/>"));
         assert!(plist_xml.contains("<key>Crashed</key>\n        <true/>"));

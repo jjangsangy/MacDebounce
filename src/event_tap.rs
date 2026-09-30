@@ -152,11 +152,17 @@ unsafe extern "C" fn event_tap_callback(
         CG_EVENT_RIGHT_MOUSE_UP => (MouseButton::RIGHT, false),
         CG_EVENT_OTHER_MOUSE_DOWN => {
             let num = unsafe { CGEventGetIntegerValueField(event, CG_MOUSE_EVENT_BUTTON_NUMBER) };
-            (MouseButton::new(num.max(0) as usize), true)
+            if num < 0 || num >= crate::debounce::MAX_BUTTONS as i64 {
+                return event;
+            }
+            (MouseButton::new(num as usize), true)
         }
         CG_EVENT_OTHER_MOUSE_UP => {
             let num = unsafe { CGEventGetIntegerValueField(event, CG_MOUSE_EVENT_BUTTON_NUMBER) };
-            (MouseButton::new(num.max(0) as usize), false)
+            if num < 0 || num >= crate::debounce::MAX_BUTTONS as i64 {
+                return event;
+            }
+            (MouseButton::new(num as usize), false)
         }
         _ => return event,
     };

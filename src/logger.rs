@@ -73,6 +73,20 @@ pub fn init(level: LogLevel, use_syslog: bool, log_file: Option<&Path>) {
     });
 }
 
+pub(crate) fn syslog_priority(level: LogLevel) -> i32 {
+    match level {
+        LogLevel::Error => 3, // LOG_ERR
+        LogLevel::Warn => 4,  // LOG_WARNING
+        // Map Info, Debug, and Trace to LOG_NOTICE (5) so that macOS Unified Logging
+        // (os_log) treats them as OS_LOG_TYPE_DEFAULT rather than OS_LOG_TYPE_DEBUG.
+        // On macOS, priority 7 (LOG_DEBUG) is silently discarded by default and never
+        // persisted to the datastore or shown in Console.app / log show.
+        // MacDebounce already filters by LogLevel internally, so only events the user
+        // wants logged will be sent to syslog.
+        LogLevel::Info | LogLevel::Debug | LogLevel::Trace => 5, // LOG_NOTICE
+    }
+}
+
 pub fn log(level: LogLevel, message: &str) {
     let guard = LOGGER.lock().unwrap();
     let (current_level, use_syslog, has_file) = if let Some(ref l) = *guard {
@@ -117,12 +131,7 @@ pub fn log(level: LogLevel, message: &str) {
 
     // 3. Output to macOS Unified Logging System (syslog)
     if use_syslog {
-        let priority = match level {
-            LogLevel::Error => 3,                   // LOG_ERR
-            LogLevel::Warn => 4,                    // LOG_WARNING
-            LogLevel::Info => 5,                    // LOG_NOTICE
-            LogLevel::Debug | LogLevel::Trace => 7, // LOG_DEBUG
-        };
+        let priority = syslog_priority(level);
         let c_fmt = b"%s\0";
         if let Ok(c_msg) = CString::new(format!("[{}] {message}", level.as_str())) {
             unsafe {
@@ -148,6 +157,7 @@ pub fn log_debug(msg: &str) {
     log(LogLevel::Debug, msg);
 }
 
+#[allow(dead_code)]
 pub fn log_trace(msg: &str) {
     log(LogLevel::Trace, msg);
 }
@@ -211,7 +221,7 @@ pub fn stream_logs() {
         .args([
             "stream",
             "--predicate",
-            "process == \"macdebounce\"",
+            "process == \"macdebounce\" || sender == \"macdebounce\"",
             "--info",
             "--debug",
             "--style",
@@ -228,5 +238,30 @@ pub fn stream_logs() {
                 .args(["-f", "-n", "30", log_path.to_str().unwrap()])
                 .status();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_syslog_priority_mapping() {
+        // macOS Unified Logging drops priority 7 (LOG_DEBUG) by default,
+        // so Info, Debug, and Trace must map to LOG_NOTICE (5) to be persisted
+        // and visible in Console.app / log show.
+        assert_eq!(syslog_priority(LogLevel::Error), 3);
+        assert_eq!(syslog_priority(LogLevel::Warn), 4);
+        assert_eq!(syslog_priority(LogLevel::Info), 5);
+        assert_eq!(syslog_priority(LogLevel::Debug), 5);
+        assert_eq!(syslog_priority(LogLevel::Trace), 5);
+    }
+
+    #[test]
+    fn test_log_level_ordering() {
+        assert!(LogLevel::Error < LogLevel::Warn);
+        assert!(LogLevel::Warn < LogLevel::Info);
+        assert!(LogLevel::Info < LogLevel::Debug);
+        assert!(LogLevel::Debug < LogLevel::Trace);
     }
 }

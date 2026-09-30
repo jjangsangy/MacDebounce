@@ -1,5 +1,6 @@
 use std::env;
 use std::fs;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
@@ -125,11 +126,26 @@ impl Config {
                 "middle" | "m" => mask |= MouseButton::MIDDLE.mask(),
                 "back" | "backward" | "backwards" => mask |= MouseButton::BACK.mask(),
                 "forward" | "foreward" | "front" => mask |= MouseButton::FORWARD.mask(),
-                "side" | "sides" => {
+                "side" | "sides" | "sidebutton" | "sidebuttons" | "side-button"
+                | "side-buttons" | "side_button" | "side_buttons" | "side button"
+                | "side buttons" => {
                     mask |= MouseButton::BACK.mask() | MouseButton::FORWARD.mask();
                 }
                 s if s.starts_with("button") => {
-                    let num_str = &s["button".len()..];
+                    let num_str = s["button".len()..].trim();
+                    let btn_idx = num_str
+                        .parse::<usize>()
+                        .map_err(|_| format!("Invalid button format: '{p}'"))?;
+                    if btn_idx >= MAX_BUTTONS {
+                        return Err(format!(
+                            "Button index {btn_idx} out of range (max is {})",
+                            MAX_BUTTONS - 1
+                        ));
+                    }
+                    mask |= MouseButton::new(btn_idx).mask();
+                }
+                s if s.starts_with("btn") => {
+                    let num_str = s["btn".len()..].trim();
                     let btn_idx = num_str
                         .parse::<usize>()
                         .map_err(|_| format!("Invalid button format: '{p}'"))?;
@@ -166,37 +182,68 @@ impl Config {
     /// Read config file from a given path or try default system locations.
     pub fn load_from_file_or_defaults(explicit_path: Option<&Path>) -> (Self, Option<PathBuf>) {
         if let Some(path) = explicit_path {
-            if let Ok(content) = fs::read_to_string(path) {
-                if let Ok(cfg) = Self::parse_toml_str(&content) {
-                    let mut res = cfg;
-                    res.config_file_path = Some(path.to_path_buf());
-                    return (res, Some(path.to_path_buf()));
+            match fs::read_to_string(path) {
+                Ok(content) => match Self::parse_toml_str(&content) {
+                    Ok(mut cfg) => {
+                        cfg.config_file_path = Some(path.to_path_buf());
+                        return (cfg, Some(path.to_path_buf()));
+                    }
+                    Err(err) => {
+                        eprintln!(
+                            "Warning: Failed to parse configuration file {}: {}",
+                            path.display(),
+                            err
+                        );
+                    }
+                },
+                Err(err) => {
+                    eprintln!(
+                        "Warning: Failed to read configuration file {}: {}",
+                        path.display(),
+                        err
+                    );
                 }
             }
             return (Self::default(), None);
         }
 
-        // Search default locations
+        // Search default locations:
+        // 1. ~/.config/macdebounce/config.toml
+        // 2. ~/Library/Application Support/MacDebounce/config.toml
+        // 3. /Library/Application Support/MacDebounce/config.toml
+        let mut candidates = Vec::new();
         if let Some(home) = env::var_os("HOME") {
-            let user_cfg = PathBuf::from(home).join(".config/macdebounce/config.toml");
-            if user_cfg.is_file() {
-                if let Ok(content) = fs::read_to_string(&user_cfg) {
-                    if let Ok(cfg) = Self::parse_toml_str(&content) {
-                        let mut res = cfg;
-                        res.config_file_path = Some(user_cfg.clone());
-                        return (res, Some(user_cfg));
-                    }
-                }
-            }
+            let home_path = PathBuf::from(home);
+            candidates.push(home_path.join(".config/macdebounce/config.toml"));
+            candidates.push(home_path.join("Library/Application Support/MacDebounce/config.toml"));
         }
+        candidates.push(PathBuf::from(
+            "/Library/Application Support/MacDebounce/config.toml",
+        ));
 
-        let sys_cfg = Path::new("/Library/Application Support/MacDebounce/config.toml");
-        if sys_cfg.is_file() {
-            if let Ok(content) = fs::read_to_string(sys_cfg) {
-                if let Ok(cfg) = Self::parse_toml_str(&content) {
-                    let mut res = cfg;
-                    res.config_file_path = Some(sys_cfg.to_path_buf());
-                    return (res, Some(sys_cfg.to_path_buf()));
+        for candidate in candidates {
+            if candidate.is_file() {
+                match fs::read_to_string(&candidate) {
+                    Ok(content) => match Self::parse_toml_str(&content) {
+                        Ok(mut cfg) => {
+                            cfg.config_file_path = Some(candidate.clone());
+                            return (cfg, Some(candidate));
+                        }
+                        Err(err) => {
+                            eprintln!(
+                                "Warning: Failed to parse configuration file {}: {}",
+                                candidate.display(),
+                                err
+                            );
+                        }
+                    },
+                    Err(err) => {
+                        eprintln!(
+                            "Warning: Failed to read configuration file {}: {}",
+                            candidate.display(),
+                            err
+                        );
+                    }
                 }
             }
         }
@@ -208,7 +255,8 @@ impl Config {
     pub fn parse_toml_str(content: &str) -> Result<Self, String> {
         let mut cfg = Self::default();
 
-        for (line_no, line) in content.lines().enumerate() {
+        let mut lines_iter = content.lines().enumerate().peekable();
+        while let Some((line_no, line)) = lines_iter.next() {
             let trimmed = line.trim();
             if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with(';') {
                 continue;
@@ -216,11 +264,28 @@ impl Config {
 
             if let Some((raw_key, raw_val)) = trimmed.split_once('=') {
                 let key = raw_key.trim().to_ascii_lowercase();
-                let mut val = raw_val.trim();
+                let mut val = raw_val.trim().to_string();
 
                 // Strip trailing comment if present
                 if let Some((v, _)) = val.split_once('#') {
-                    val = v.trim();
+                    val = v.trim().to_string();
+                }
+
+                // If value starts with '[' but doesn't end with ']', read subsequent lines until ']'
+                if val.starts_with('[') && !val.ends_with(']') {
+                    while let Some((_, next_line)) = lines_iter.next() {
+                        let next_trimmed = next_line.trim();
+                        let clean_next = if let Some((v, _)) = next_trimmed.split_once('#') {
+                            v.trim()
+                        } else {
+                            next_trimmed
+                        };
+                        val.push(' ');
+                        val.push_str(clean_next);
+                        if clean_next.contains(']') {
+                            break;
+                        }
+                    }
                 }
 
                 match key.as_str() {
@@ -231,11 +296,15 @@ impl Config {
                         cfg.debounce_ms = ms;
                     }
                     "buttons" => {
-                        if val.starts_with('[') && val.ends_with(']') {
-                            let inner = &val[1..val.len() - 1];
+                        let val_str = val.trim();
+                        if val_str.starts_with('[') && val_str.ends_with(']') {
+                            let inner = &val_str[1..val_str.len() - 1];
                             let mut combined = String::new();
                             for item in inner.split(',') {
                                 let item_clean = item.trim().trim_matches('"').trim_matches('\'');
+                                if item_clean.is_empty() {
+                                    continue;
+                                }
                                 if !combined.is_empty() {
                                     combined.push(',');
                                 }
@@ -243,7 +312,7 @@ impl Config {
                             }
                             cfg.selection = Self::parse_buttons(&combined)?;
                         } else {
-                            let clean = val.trim_matches('"').trim_matches('\'');
+                            let clean = val_str.trim_matches('"').trim_matches('\'');
                             cfg.selection = Self::parse_buttons(clean)?;
                         }
                     }
@@ -306,12 +375,33 @@ impl Config {
             config.config_file_path = found_path;
         }
 
-        // Apply CLI overrides
-        if let Some(ms) = cli.debounce_ms {
-            config.debounce_ms = ms;
-        }
-        if let Some(ref btns) = cli.buttons {
-            config.selection = Self::parse_buttons(btns)?;
+        let is_interactive = std::io::stdout().is_terminal();
+
+        // When running as a background daemon (launchd non-interactive) and a config file
+        // was loaded, settings from config.toml are the source of truth unless --config was explicitly given.
+        // This prevents legacy hardcoded CLI flags in LaunchAgent plists (e.g. `--buttons 0,1`)
+        // from permanently overriding the user's config file.
+        let is_daemon_with_config = !is_interactive
+            && config.config_file_path.is_some()
+            && cli.config.is_none()
+            && !cli.install_launchd
+            && !cli.generate_plist;
+
+        if is_daemon_with_config {
+            if cli.buttons.is_some() || cli.debounce_ms.is_some() {
+                crate::logger::log_info(&format!(
+                    "Running as background daemon with config file ({}). Using config file settings and ignoring legacy launchd plist arguments.",
+                    config.config_file_path.as_ref().unwrap().display()
+                ));
+            }
+        } else {
+            // Apply CLI overrides
+            if let Some(ms) = cli.debounce_ms {
+                config.debounce_ms = ms;
+            }
+            if let Some(ref btns) = cli.buttons {
+                config.selection = Self::parse_buttons(btns)?;
+            }
         }
         if cli.log_all {
             config.log_level = LogLevel::Trace;
@@ -345,7 +435,12 @@ impl Config {
                 for i in 0..MAX_BUTTONS {
                     let btn = MouseButton::new(i);
                     if (mask & btn.mask()) != 0 {
-                        names.push(btn.name().to_string());
+                        let n = btn.name();
+                        if n == "Other" {
+                            names.push(format!("Button {i}"));
+                        } else {
+                            names.push(n.to_string());
+                        }
                     }
                 }
                 if names.is_empty() {
@@ -411,6 +506,22 @@ mod tests {
             Config::parse_buttons("button3, button4").unwrap(),
             ButtonSelection::Specific((1 << 3) | (1 << 4))
         );
+        assert_eq!(
+            Config::parse_buttons("btn3, btn4").unwrap(),
+            ButtonSelection::Specific((1 << 3) | (1 << 4))
+        );
+        assert_eq!(
+            Config::parse_buttons("side-buttons").unwrap(),
+            ButtonSelection::Specific((1 << 3) | (1 << 4))
+        );
+        assert_eq!(
+            Config::parse_buttons("side_button").unwrap(),
+            ButtonSelection::Specific((1 << 3) | (1 << 4))
+        );
+        assert_eq!(
+            Config::parse_buttons("side buttons").unwrap(),
+            ButtonSelection::Specific((1 << 3) | (1 << 4))
+        );
     }
 
     #[test]
@@ -440,6 +551,20 @@ mod tests {
         assert_eq!(cfg_all.selection, ButtonSelection::All);
         assert_eq!(cfg_all.log_level, LogLevel::Trace);
         assert_eq!(cfg_all.use_syslog, false);
+
+        let toml_multiline = r#"
+            debounce_ms = 80
+            buttons = [
+                "back",
+                "forward",
+            ]
+        "#;
+        let cfg_multiline = Config::parse_toml_str(toml_multiline).unwrap();
+        assert_eq!(cfg_multiline.debounce_ms, 80);
+        assert_eq!(
+            cfg_multiline.selection,
+            ButtonSelection::Specific((1 << 3) | (1 << 4))
+        );
     }
 
     #[test]

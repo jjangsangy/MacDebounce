@@ -42,6 +42,23 @@ curl -fsSL https://raw.githubusercontent.com/jjangsangy/MacDebounce/main/scripts
 curl -fsSL https://raw.githubusercontent.com/jjangsangy/MacDebounce/main/scripts/install.sh | MACDEBOUNCE_VERSION=0.1.0 sh
 ```
 
+### Install via Cargo
+
+You can install `macdebounce` directly from GitHub using Cargo:
+
+```bash
+cargo install --git https://github.com/jjangsangy/MacDebounce.git
+```
+
+> **Important (macOS Code Signing):**
+> macOS Accessibility permissions (`CGEventTap`) require the binary to have a stable code-signing identity and designated requirement. Binaries built with Cargo lack this identifier by default, which causes macOS TCC to reject or fail to persist Accessibility permissions across runs.
+>
+> After installing, sign the binary with the designated identifier:
+> ```bash
+> codesign --force -s - -i com.macdebounce.daemon -r='designated => identifier "com.macdebounce.daemon"' $(which macdebounce)
+> ```
+> *(Or use `~/.cargo/bin/macdebounce` directly if `~/.cargo/bin` is not in your `$PATH`.)*
+
 ### Building from Source
 
 If you prefer compiling from source, ensure you have Rust installed (`cargo` and `rustc`):
@@ -50,6 +67,7 @@ If you prefer compiling from source, ensure you have Rust installed (`cargo` and
 git clone https://github.com/jjangsangy/MacDebounce.git
 cd MacDebounce
 cargo build --release
+codesign --force -s - -i com.macdebounce.daemon -r='designated => identifier "com.macdebounce.daemon"' target/release/macdebounce
 cp target/release/macdebounce /usr/local/bin/
 ```
 
@@ -62,9 +80,9 @@ macOS requires accessibility permissions for any process that intercepts input e
 1. Open **System Settings** -> **Privacy & Security** -> **Accessibility**.
 2. Click the `+` button (or enable the toggle).
 3. If testing in a terminal (e.g., Terminal, iTerm, Zed, Ghostty), grant permission to that terminal app.
-4. When running as a `launchctl` background service, add the binary path (e.g., `/usr/local/bin/macdebounce` or your project target path) to the Accessibility list.
+4. When running as a `launchctl` background service, add the binary path (e.g., `/usr/local/bin/macdebounce` or `~/.cargo/bin/macdebounce`) to the Accessibility list.
 
-Check permission status anytime:
+Check permission and code signature status anytime:
 ```bash
 macdebounce --status
 ```

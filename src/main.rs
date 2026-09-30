@@ -50,6 +50,15 @@ fn print_status() {
             } else {
                 println!("  Service status:         [NOT RUNNING]");
             }
+
+            if let Ok(plist_content) = std::fs::read_to_string(&plist_path) {
+                if plist_content.contains("<string>--buttons</string>") {
+                    println!(
+                        "  Notice: LaunchAgent plist contains legacy hardcoded --buttons argument."
+                    );
+                    println!("  Run 'macdebounce --install-launchd' to update the plist.");
+                }
+            }
         } else {
             println!("LaunchAgent plist:        [NOT INSTALLED]");
             if let Some(pid) = get_service_status() {
